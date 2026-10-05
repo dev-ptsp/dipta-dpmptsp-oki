@@ -348,7 +348,7 @@ Kinerja pelayanan secara umum menunjukkan komitmen aparatur yang solid dalam mem
             framework: 'vite',
             buildCommand: 'vite build',
             outputDirectory: 'dist',
-            installCommand: 'npm install',
+            installCommand: 'npm install --legacy-peer-deps',
           },
           target: 'production',
         }),
