@@ -501,14 +501,13 @@ Kinerja pelayanan secara umum menunjukkan komitmen aparatur yang solid dalam mem
         treeItems.push(...batchResults);
       }
 
-      // 5. Create Git Tree
+      // 5. Create Git Tree (full snapshot without base_tree so deleted files like bun.lock are removed)
       const treeRes = await fetch(
         `https://api.github.com/repos/${owner}/${cleanRepoName}/git/trees`,
         {
           method: 'POST',
           headers: ghHeaders,
           body: JSON.stringify({
-            ...(latestCommitSha ? { base_tree: latestCommitSha } : {}),
             tree: treeItems,
           }),
         }

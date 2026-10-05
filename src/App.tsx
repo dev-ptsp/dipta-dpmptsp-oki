@@ -86,6 +86,30 @@ export default function App() {
   useEffect(() => {
     reloadData();
 
+    // Auto-push updated package.json & vercel.json fix to GitHub if user already connected their token
+    const savedGhToken = localStorage.getItem('dipta_github_token');
+    const savedGhRepo = localStorage.getItem('dipta_github_repo') || 'dipta-dpmptsp-oki';
+    const lastSyncedFix = localStorage.getItem('dipta_github_sync_version');
+    if (savedGhToken && lastSyncedFix !== 'v3-vercel-npm-fix') {
+      fetch('/api/github/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          githubToken: savedGhToken,
+          repoName: savedGhRepo,
+          isPrivate: false,
+          commitMessage: 'Fix Vercel npm install & build configuration (remove bun.lock, update esbuild & .npmrc)'
+        })
+      })
+        .then(r => r.json())
+        .then(res => {
+          if (res?.success) {
+            localStorage.setItem('dipta_github_sync_version', 'v3-vercel-npm-fix');
+          }
+        })
+        .catch(() => {});
+    }
+
     // If Supabase is configured, pull latest data & subscribe to real-time updates
     if (DiptaSupabaseService.getConfig().isConfigured) {
       DiptaStorageService.loadAllFromSupabase().then(res => {
