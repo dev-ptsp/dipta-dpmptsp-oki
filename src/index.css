@@ -1,0 +1,135 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   CSS PRINT MEDIA QUERY KHUSUS LAPORAN PELAYANAN TERPADU (LaporanPelayananView)
+   ============================================================================ */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm 12mm;
+  }
+
+  html,
+  body,
+  #root,
+  main {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Sembunyikan navigasi utama, header aplikasi, filter interaktif, dan tombol saat print */
+  #dipta-header,
+  #dipta-sidebar,
+  #global-filter-container,
+  .no-print {
+    display: none !important;
+  }
+
+  /* Tampilkan elemen khusus cetak (Kop Surat, Ringkasan Filter, Tanda Tangan) */
+  .print-only {
+    display: block !important;
+  }
+
+  .print-only-flex {
+    display: flex !important;
+  }
+
+  /* Penataan kontainer utama LaporanPelayananView saat cetak */
+  #laporan-pelayanan-view {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  #laporan-pelayanan-view > * + * {
+    margin-top: 12px !important;
+  }
+
+  /* Kartu KPI Ringkasan pada mode cetak */
+  #laporan-pelayanan-view .print-kpi-grid {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  #laporan-pelayanan-view .print-kpi-card {
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 6px !important;
+    padding: 8px 10px !important;
+    box-shadow: none !important;
+    background: #f8fafc !important;
+  }
+
+  /* Kontainer seksi & tabel laporan */
+  #laporan-pelayanan-view .print-section {
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    margin-bottom: 14px !important;
+  }
+
+  #laporan-pelayanan-view .overflow-x-auto {
+    overflow: visible !important;
+  }
+
+  /* Tabel Laporan Siap Cetak */
+  #laporan-pelayanan-view table {
+    width: 100% !important;
+    min-width: 0 !important;
+    border-collapse: collapse !important;
+    font-size: 9.5pt !important;
+    line-height: 1.35 !important;
+  }
+
+  #laporan-pelayanan-view thead {
+    display: table-header-group !important;
+    background-color: #f1f5f9 !important;
+  }
+
+  #laporan-pelayanan-view tfoot {
+    display: table-footer-group !important;
+    background-color: #f8fafc !important;
+  }
+
+  #laporan-pelayanan-view tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  #laporan-pelayanan-view th,
+  #laporan-pelayanan-view td {
+    border: 1px solid #cbd5e1 !important;
+    padding: 5px 7px !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+  }
+
+  /* Matikan truncate pada mode cetak agar seluruh nama pemohon, jenis layanan, & nomor SK terbaca utuh */
+  #laporan-pelayanan-view .truncate {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    max-width: none !important;
+  }
+
+  /* Blok pengesahan tanda tangan tidak terpotong halaman */
+  #laporan-pelayanan-view .print-signature-block {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin-top: 18px !important;
+  }
+}
