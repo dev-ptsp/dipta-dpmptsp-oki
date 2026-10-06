@@ -90,7 +90,7 @@ export default function App() {
     const savedGhToken = localStorage.getItem('dipta_github_token');
     const savedGhRepo = localStorage.getItem('dipta_github_repo') || 'dipta-dpmptsp-oki';
     const lastSyncedFix = localStorage.getItem('dipta_github_sync_version');
-    if (savedGhToken && lastSyncedFix !== 'v4-supabase-direct-sync') {
+    if (savedGhToken && lastSyncedFix !== 'v5-geojson-kecamatan-map') {
       fetch('/api/github/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -98,13 +98,13 @@ export default function App() {
           githubToken: savedGhToken,
           repoName: savedGhRepo,
           isPrivate: false,
-          commitMessage: 'Direct Supabase Cloud database synchronization across all devices & fix react-is Vite build'
+          commitMessage: 'Replace Google Maps with interactive GeoJSON 18-Kecamatan administrative map & Supabase direct sync'
         })
       })
         .then(r => r.json())
         .then(res => {
           if (res?.success) {
-            localStorage.setItem('dipta_github_sync_version', 'v4-supabase-direct-sync');
+            localStorage.setItem('dipta_github_sync_version', 'v5-geojson-kecamatan-map');
           }
         })
         .catch(() => {});

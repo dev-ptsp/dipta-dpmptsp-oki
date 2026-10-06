@@ -1,29 +1,32 @@
-// DIPTA - Peta Interaktif Kabupaten Ogan Komering Ilir
-// Menggunakan @vis.gl/react-google-maps dengan Batas Wilayah Asli Google Maps, Places API (New) Viewport Fitting, AdvancedMarker, & Layer Kerapatan Layanan
+// DIPTA - Peta Interaktif Administrasi 18 Kecamatan Kabupaten Ogan Komering Ilir
+// Menggunakan Poligon Wilayah Administrasi Kecamatan (ADMINISTRASIKECAMATAN_AR_50K.geojson) dengan Warna Berbeda Tiap Kecamatan & Pop-Up Data Pelayanan Berdasarkan Sumber Aplikasi
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import {
-  APIProvider,
-  Map,
-  AdvancedMarker,
-  InfoWindow,
-  useMap,
-  useMapsLibrary
-} from '@vis.gl/react-google-maps';
+import L from 'leaflet';
 import { DiptaRecord } from '../../types';
-import { OKI_KECAMATAN_GEO, OKI_MAP_CENTER, OKI_DEFAULT_ZOOM, KecamatanGeo } from '../../data/okiGeodata';
 import {
-  ExternalLink,
+  OKI_KECAMATAN_GEO,
+  OKI_MAP_CENTER,
+  OKI_DEFAULT_ZOOM,
+  KecamatanGeo,
+  resolveKecamatanFromFeatureProps
+} from '../../data/okiGeodata';
+import {
   RotateCcw,
   ZoomIn,
   ZoomOut,
-  Flame,
   Navigation,
-  Globe2,
-  Sliders,
-  Filter,
+  Map as MapIcon,
   Eye,
   EyeOff,
-  MapPin
+  Upload,
+  CheckCircle2,
+  Clock,
+  XCircle,
+  Layers,
+  Building2,
+  FileCheck2,
+  Landmark,
+  Filter
 } from 'lucide-react';
 
 interface OkiInteractiveMapProps {
@@ -32,765 +35,885 @@ interface OkiInteractiveMapProps {
   selectedKecamatan?: string;
 }
 
-type GoogleMapType = 'roadmap' | 'satellite' | 'hybrid' | 'terrain';
-type HeatmapDatasetFilter = 'ALL' | 'OSS-RBA' | 'SICANTIK' | 'SIMBG';
+type BaseMapStyle = 'clean' | 'osm' | 'satellite' | 'blank';
 
-interface HeatPoint {
-  lat: number;
-  lng: number;
-  weight: number;
-  kecamatan: string;
-  source?: string;
+interface KecamatanServiceStats {
+  total: number;
+  oss: number;
+  ossNib: number;
+  ossKegiatan: number;
+  ossIzin: number;
+  sicantik: number;
+  simbg: number;
+  selesai: number;
+  proses: number;
+  ditolak: number;
+  investasiTotal: number;
 }
 
-const GOOGLE_MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || '';
-
-interface MapOverlaysProps {
-  googleType: GoogleMapType;
-  showHeatmap: boolean;
-  heatmapRadius: number;
-  heatmapPoints: HeatPoint[];
-  onPlaceViewportResolved: (kecName: string, centerPos: { lat: number; lng: number }, formattedAddress?: string) => void;
-  mapActionRef: React.MutableRefObject<{
-    zoomIn: () => void;
-    zoomOut: () => void;
-    resetCenter: () => void;
-    focusKecamatanByGoogleMaps: (kec: KecamatanGeo) => void;
-  } | null>;
-}
-
-const OkiMapOverlays: React.FC<MapOverlaysProps> = ({
-  googleType,
-  showHeatmap,
-  heatmapRadius,
-  heatmapPoints,
-  onPlaceViewportResolved,
-  mapActionRef
-}) => {
-  const map = useMap();
-  const placesLib = useMapsLibrary('places');
-  const circlesRef = useRef<google.maps.Circle[]>([]);
-  const viewportCacheRef = useRef<
-    Record<
-      string,
-      {
-        viewport?: google.maps.LatLngBounds;
-        location: { lat: number; lng: number };
-        formattedAddress?: string;
-      }
-    >
-  >({});
-
-  // Look up official Google Maps Kecamatan viewport & boundary extent using Places API (New)
-  const focusKecamatanByGoogleMaps = useCallback(
-    async (kec: KecamatanGeo) => {
-      if (!map) return;
-
-      const cached = viewportCacheRef.current[kec.name];
-      if (cached) {
-        if (cached.viewport) {
-          map.fitBounds(cached.viewport, 40);
-        } else {
-          map.setCenter(cached.location);
-          map.setZoom(12);
-        }
-        onPlaceViewportResolved(kec.name, cached.location, cached.formattedAddress);
-        return;
-      }
-
-      if (placesLib && (placesLib as any).Place?.searchByText) {
-        try {
-          const { places } = await (placesLib as any).Place.searchByText({
-            textQuery: `Kecamatan ${kec.name}, Kabupaten Ogan Komering Ilir, Sumatera Selatan`,
-            fields: ['displayName', 'location', 'viewport', 'formattedAddress'],
-            language: 'id',
-            region: 'ID'
-          });
-
-          const place = places?.[0];
-          if (place) {
-            const loc = place.location
-              ? { lat: place.location.lat(), lng: place.location.lng() }
-              : { lat: kec.center[0], lng: kec.center[1] };
-
-            viewportCacheRef.current[kec.name] = {
-              viewport: place.viewport || undefined,
-              location: loc,
-              formattedAddress: place.formattedAddress || undefined
-            };
-
-            if (place.viewport) {
-              map.fitBounds(place.viewport, 40);
-            } else {
-              map.setCenter(loc);
-              map.setZoom(12);
-            }
-
-            onPlaceViewportResolved(kec.name, loc, place.formattedAddress || undefined);
-            return;
-          }
-        } catch (err: any) {
-          const msg = String(err?.message || err || '');
-          if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('OVER_QUERY_LIMIT')) {
-            window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-          }
-        }
-      }
-
-      // Fallback to official center coordinate if Places lookup is unavailable
-      const fallbackPos = { lat: kec.center[0], lng: kec.center[1] };
-      map.setCenter(fallbackPos);
-      map.setZoom(12);
-      onPlaceViewportResolved(kec.name, fallbackPos);
-    },
-    [map, placesLib, onPlaceViewportResolved]
-  );
-
-  // Expose map camera controls to parent toolbar
-  useEffect(() => {
-    if (!map) return;
-    mapActionRef.current = {
-      zoomIn: () => {
-        const currentZoom = map.getZoom() ?? OKI_DEFAULT_ZOOM;
-        map.setZoom(currentZoom + 1);
-      },
-      zoomOut: () => {
-        const currentZoom = map.getZoom() ?? OKI_DEFAULT_ZOOM;
-        map.setZoom(currentZoom - 1);
-      },
-      resetCenter: () => {
-        map.setCenter({ lat: OKI_MAP_CENTER[0], lng: OKI_MAP_CENTER[1] });
-        map.setZoom(OKI_DEFAULT_ZOOM);
-      },
-      focusKecamatanByGoogleMaps
-    };
-  }, [map, mapActionRef, focusKecamatanByGoogleMaps]);
-
-  // Synchronize mapTypeId when user switches between Roadmap, Satellite, Hybrid, and Terrain
-  useEffect(() => {
-    if (!map) return;
-    map.setMapTypeId(googleType);
-  }, [map, googleType]);
-
-  // Render thermal density circles
-  useEffect(() => {
-    circlesRef.current.forEach(c => c.setMap(null));
-    circlesRef.current = [];
-
-    if (!map || !showHeatmap || heatmapPoints.length === 0 || typeof google === 'undefined' || !google.maps?.Circle) {
-      return;
-    }
-
-    const radiusMeters = heatmapRadius * 135;
-
-    heatmapPoints.forEach(pt => {
-      const normalized = Math.min(pt.weight / 3.5, 1);
-      const color =
-        normalized > 0.75
-          ? '#ef4444'
-          : normalized > 0.5
-          ? '#f97316'
-          : normalized > 0.3
-          ? '#facc15'
-          : '#10b981';
-
-      const circle = new google.maps.Circle({
-        center: { lat: pt.lat, lng: pt.lng },
-        radius: radiusMeters * (0.7 + normalized * 0.6),
-        strokeWeight: 0,
-        fillColor: color,
-        fillOpacity: 0.24 + normalized * 0.22,
-        clickable: false,
-        map
-      });
-
-      circlesRef.current.push(circle);
-    });
-
-    return () => {
-      circlesRef.current.forEach(c => c.setMap(null));
-      circlesRef.current = [];
-    };
-  }, [map, showHeatmap, heatmapPoints, heatmapRadius]);
-
-  return null;
-};
+const CUSTOM_GEOJSON_STORAGE_KEY = 'dipta_custom_kecamatan_geojson_v1';
 
 export const OkiInteractiveMap: React.FC<OkiInteractiveMapProps> = ({
   records,
   onSelectKecamatan,
   selectedKecamatan
 }) => {
-  const [googleType, setGoogleType] = useState<GoogleMapType>('roadmap');
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const geoJsonLayerRef = useRef<L.GeoJSON | null>(null);
+  const labelMarkersRef = useRef<L.Marker[]>([]);
+  const layerByKecNameRef = useRef<Record<string, L.Layer>>({});
+
+  const [geoJsonData, setGeoJsonData] = useState<any | null>(null);
+  const [isLoadingGeo, setIsLoadingGeo] = useState<boolean>(true);
+  const [geoSourceLabel, setGeoSourceLabel] = useState<string>('ADMINISTRASIKECAMATAN_AR_50K.geojson');
+  const [baseMapStyle, setBaseMapStyle] = useState<BaseMapStyle>('clean');
+  const [showLabels, setShowLabels] = useState<boolean>(true);
+  const [fillOpacity, setFillOpacity] = useState<number>(0.68);
   const [activeKecamatan, setActiveKecamatan] = useState<KecamatanGeo | null>(null);
-  const [infoWindowState, setInfoWindowState] = useState<{
-    kec: KecamatanGeo;
-    position: { lat: number; lng: number };
-    formattedAddress?: string;
-  } | null>(null);
+  const [uploadFeedback, setUploadFeedback] = useState<string | null>(null);
 
-  // Controls for Heatmap & Kecamatan Markers
-  const [showHeatmap, setShowHeatmap] = useState<boolean>(true);
-  const [showMarkers, setShowMarkers] = useState<boolean>(true);
-  const [heatmapRadius, setHeatmapRadius] = useState<number>(28);
-  const [heatmapDataset, setHeatmapDataset] = useState<HeatmapDatasetFilter>('ALL');
-  const [showHeatmapSettings, setShowHeatmapSettings] = useState<boolean>(false);
-
-  const mapActionRef = useRef<{
-    zoomIn: () => void;
-    zoomOut: () => void;
-    resetCenter: () => void;
-    focusKecamatanByGoogleMaps: (kec: KecamatanGeo) => void;
-  } | null>(null);
-
-  // Aggregate stats per kecamatan
+  // Aggregate service data per Kecamatan broken down by Sumber Aplikasi (OSS-RBA, SICANTIK, SIMBG) & Status DIPTA
   const statsByKecamatan = useMemo(() => {
-    const stats: Record<
-      string,
-      {
-        total: number;
-        oss: number;
-        sicantik: number;
-        simbg: number;
-        selesai: number;
-        proses: number;
-        ditolak: number;
-      }
-    > = {};
+    const stats: Record<string, KecamatanServiceStats> = {};
 
     OKI_KECAMATAN_GEO.forEach(k => {
       stats[k.name] = {
         total: 0,
         oss: 0,
+        ossNib: 0,
+        ossKegiatan: 0,
+        ossIzin: 0,
         sicantik: 0,
         simbg: 0,
         selesai: 0,
         proses: 0,
-        ditolak: 0
+        ditolak: 0,
+        investasiTotal: 0
       };
     });
 
     records.forEach(r => {
-      const kec = r.kecamatan?.trim();
-      if (kec && stats[kec]) {
-        stats[kec].total += 1;
-        if (r.sumber_aplikasi === 'OSS-RBA') stats[kec].oss += 1;
-        else if (r.sumber_aplikasi === 'SICANTIK') stats[kec].sicantik += 1;
-        else if (r.sumber_aplikasi === 'SIMBG') stats[kec].simbg += 1;
+      const rawKec = r.kecamatan?.trim() || '';
+      const matchedGeo = resolveKecamatanFromFeatureProps({ name: rawKec });
+      const kecKey = matchedGeo ? matchedGeo.name : rawKec;
 
-        if (r.status_dipta === 'SELESAI_TERBIT') stats[kec].selesai += 1;
-        else if (r.status_dipta === 'DALAM_PROSES') stats[kec].proses += 1;
-        else if (r.status_dipta === 'DITOLAK') stats[kec].ditolak += 1;
+      if (kecKey && stats[kecKey]) {
+        stats[kecKey].total += 1;
+
+        if (r.sumber_aplikasi === 'OSS-RBA') {
+          stats[kecKey].oss += 1;
+          if (r.jenis_dataset === 'OSS_NIB') stats[kecKey].ossNib += 1;
+          else if (r.jenis_dataset === 'OSS_KEGIATAN') stats[kecKey].ossKegiatan += 1;
+          else if (r.jenis_dataset === 'OSS_IZIN') stats[kecKey].ossIzin += 1;
+        } else if (r.sumber_aplikasi === 'SICANTIK') {
+          stats[kecKey].sicantik += 1;
+        } else if (r.sumber_aplikasi === 'SIMBG') {
+          stats[kecKey].simbg += 1;
+        }
+
+        if (r.status_dipta === 'SELESAI_TERBIT') stats[kecKey].selesai += 1;
+        else if (r.status_dipta === 'DALAM_PROSES') stats[kecKey].proses += 1;
+        else if (r.status_dipta === 'DITOLAK') stats[kecKey].ditolak += 1;
+
+        if (r.investasi_rupiah && Number.isFinite(Number(r.investasi_rupiah))) {
+          stats[kecKey].investasiTotal += Number(r.investasi_rupiah);
+        }
       }
     });
 
     return stats;
   }, [records]);
 
-  // Generate density points based on real records data across OKI Kecamatan
-  const heatmapPoints = useMemo<HeatPoint[]>(() => {
-    const points: HeatPoint[] = [];
+  // Build HTML popup content when a Kecamatan polygon is clicked
+  const buildPopupHtml = useCallback(
+    (kec: KecamatanGeo, st: KecamatanServiceStats, extraProps?: Record<string, any>) => {
+      const ossPct = st.total > 0 ? Math.round((st.oss / st.total) * 100) : 0;
+      const sicantikPct = st.total > 0 ? Math.round((st.sicantik / st.total) * 100) : 0;
+      const simbgPct = st.total > 0 ? Math.round((st.simbg / st.total) * 100) : 0;
+      const jumlahDesa = extraProps?.JUMLAH_DESA ? `${extraProps.JUMLAH_DESA} Desa/Kelurahan` : `Ibu Kota: ${kec.capital}`;
 
-    const targetRecords = records.filter(r => {
-      if (heatmapDataset === 'ALL') return true;
-      return r.sumber_aplikasi === heatmapDataset;
-    });
+      return `
+        <div style="font-family: Inter, system-ui, sans-serif; color: #0f172a;">
+          <!-- Header Warna Kecamatan -->
+          <div style="background: linear-gradient(135deg, ${kec.color}, ${kec.borderColor}); color: #ffffff; padding: 12px 14px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-right: 18px;">
+              <span style="font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; background: rgba(255,255,255,0.22); padding: 2px 7px; border-radius: 999px;">
+                Wilayah Kecamatan
+              </span>
+              <span style="font-size: 10px; opacity: 0.92; font-weight: 600;">
+                ${kec.areaKm2} km²
+              </span>
+            </div>
+            <div style="font-size: 15px; font-weight: 800; margin-top: 5px; line-height: 1.2;">
+              Kec. ${kec.name}
+            </div>
+            <div style="font-size: 11px; opacity: 0.9; margin-top: 2px;">
+              ${jumlahDesa} • Kab. Ogan Komering Ilir
+            </div>
+          </div>
 
-    targetRecords.forEach((r, idx) => {
-      const kecName = r.kecamatan?.trim();
-      const geo =
-        OKI_KECAMATAN_GEO.find(g => g.name.toLowerCase() === kecName?.toLowerCase()) ||
-        OKI_KECAMATAN_GEO[0];
+          <!-- Body Statistik Berdasarkan Sumber Aplikasi -->
+          <div style="padding: 12px 14px; background: #ffffff;">
+            <!-- Total Pelayanan Banner -->
+            <div style="display: flex; align-items: center; justify-content: space-between; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px 11px; margin-bottom: 10px;">
+              <span style="font-size: 11px; font-weight: 700; color: #334155;">Total Data Pelayanan</span>
+              <span style="font-size: 14px; font-weight: 800; color: ${kec.borderColor};">
+                ${st.total.toLocaleString('id-ID')} Berkas
+              </span>
+            </div>
 
-      const str = `${r.id_dipta || ''}-${r.id_record_sumber || ''}-${idx}-${geo.name}`;
-      let hash = 0;
-      for (let i = 0; i < str.length; i++) {
-        hash = (hash << 5) - hash + str.charCodeAt(i);
-        hash |= 0;
-      }
-      const positiveHash = Math.abs(hash);
-      const angle = (positiveHash % 360) * (Math.PI / 180);
+            <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 6px;">
+              Rincian Berdasarkan Sumber Aplikasi:
+            </div>
 
-      const maxRadiusDeg = geo.areaKm2 > 3000 ? 0.065 : geo.areaKm2 > 1000 ? 0.042 : 0.022;
-      const distRatio = Math.sqrt(((positiveHash >> 4) % 1000) / 1000);
-      const radius = distRatio * maxRadiusDeg;
+            <!-- 1. OSS-RBA -->
+            <div style="border: 1px solid #d1fae5; background: #ecfdf5; border-radius: 8px; padding: 7px 10px; margin-bottom: 6px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+                <span style="font-weight: 700; color: #065f46; display: flex; align-items: center; gap: 5px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
+                  1. OSS-RBA (Perizinan Berusaha)
+                </span>
+                <strong style="color: #047857; font-size: 12px;">${st.oss.toLocaleString('id-ID')} (${ossPct}%)</strong>
+              </div>
+              <div style="display: flex; justify-content: space-between; font-size: 10px; color: #047857; margin-top: 3px; padding-left: 13px;">
+                <span>NIB: <b>${st.ossNib}</b></span>
+                <span>Kegiatan: <b>${st.ossKegiatan}</b></span>
+                <span>Izin: <b>${st.ossIzin}</b></span>
+              </div>
+            </div>
 
-      const lat = geo.center[0] + radius * Math.cos(angle);
-      const lng = geo.center[1] + radius * Math.sin(angle);
+            <!-- 2. SICANTIK Cloud -->
+            <div style="border: 1px solid #e0f2fe; background: #f0f9ff; border-radius: 8px; padding: 7px 10px; margin-bottom: 6px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+                <span style="font-weight: 700; color: #075985; display: flex; align-items: center; gap: 5px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #0284c7; display: inline-block;"></span>
+                  2. SICANTIK Cloud (Non-Berusaha)
+                </span>
+                <strong style="color: #0369a1; font-size: 12px;">${st.sicantik.toLocaleString('id-ID')} (${sicantikPct}%)</strong>
+              </div>
+            </div>
 
-      let weight = 1.0;
-      if (r.investasi_rupiah && r.investasi_rupiah > 100000000) {
-        weight += 0.5;
-      }
-      if (r.status_dipta === 'DALAM_PROSES') {
-        weight += 0.2;
-      }
+            <!-- 3. SIMBG -->
+            <div style="border: 1px solid #fef3c7; background: #fffbeb; border-radius: 8px; padding: 7px 10px; margin-bottom: 10px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+                <span style="font-weight: 700; color: #92400e; display: flex; align-items: center; gap: 5px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #d97706; display: inline-block;"></span>
+                  3. SIMBG (Bangunan Gedung PBG/SLF)
+                </span>
+                <strong style="color: #b45309; font-size: 12px;">${st.simbg.toLocaleString('id-ID')} (${simbgPct}%)</strong>
+              </div>
+            </div>
 
-      points.push({
-        lat,
-        lng,
-        weight,
-        kecamatan: geo.name,
-        source: r.sumber_aplikasi
-      });
-    });
-
-    OKI_KECAMATAN_GEO.forEach(geo => {
-      const stats = statsByKecamatan[geo.name];
-      if (stats && stats.total > 0) {
-        const count =
-          heatmapDataset === 'ALL'
-            ? stats.total
-            : heatmapDataset === 'OSS-RBA'
-            ? stats.oss
-            : heatmapDataset === 'SICANTIK'
-            ? stats.sicantik
-            : stats.simbg;
-
-        if (count > 0) {
-          points.push({
-            lat: geo.center[0],
-            lng: geo.center[1],
-            weight: Math.min(count * 0.7, 4.5),
-            kecamatan: geo.name
-          });
-        }
-      }
-    });
-
-    return points;
-  }, [records, heatmapDataset, statsByKecamatan]);
-
-  const handlePlaceViewportResolved = useCallback(
-    (kecName: string, centerPos: { lat: number; lng: number }, formattedAddress?: string) => {
-      const kec = OKI_KECAMATAN_GEO.find(k => k.name === kecName);
-      if (!kec) return;
-      setInfoWindowState({
-        kec,
-        position: centerPos,
-        formattedAddress
-      });
+            <!-- Status DIPTA Mini Row -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; text-align: center; background: #f8fafc; padding: 6px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 10px;">
+              <div>
+                <div style="color: #64748b;">Terbit</div>
+                <div style="font-weight: 800; color: #059669; font-size: 11px;">${st.selesai}</div>
+              </div>
+              <div style="border-left: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0;">
+                <div style="color: #64748b;">Proses</div>
+                <div style="font-weight: 800; color: #d97706; font-size: 11px;">${st.proses}</div>
+              </div>
+              <div>
+                <div style="color: #64748b;">Ditolak</div>
+                <div style="font-weight: 800; color: #e11d48; font-size: 11px;">${st.ditolak}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
     },
     []
   );
 
-  const handleKecamatanSelect = (kec: KecamatanGeo) => {
+  // Load default ADMINISTRASIKECAMATAN_AR_50K.geojson (or user-uploaded custom GeoJSON if saved)
+  useEffect(() => {
+    let isMounted = true;
+    const loadGeoJson = async () => {
+      setIsLoadingGeo(true);
+      try {
+        const savedCustom = localStorage.getItem(CUSTOM_GEOJSON_STORAGE_KEY);
+        if (savedCustom) {
+          const parsed = JSON.parse(savedCustom);
+          if (parsed && Array.isArray(parsed.features) && parsed.features.length > 0) {
+            if (isMounted) {
+              setGeoJsonData(parsed);
+              setGeoSourceLabel('Data Wilayah Kustom (ADMINISTRASIKECAMATAN_AR_50K.geojson)');
+              setIsLoadingGeo(false);
+            }
+            return;
+          }
+        }
+      } catch {
+        // Ignore and load default public file
+      }
+
+      try {
+        const res = await fetch('/ADMINISTRASIKECAMATAN_AR_50K.geojson');
+        if (!res.ok) throw new Error('Gagal memuat ADMINISTRASIKECAMATAN_AR_50K.geojson');
+        const data = await res.json();
+        if (isMounted) {
+          setGeoJsonData(data);
+          setGeoSourceLabel('ADMINISTRASIKECAMATAN_AR_50K.geojson (18 Kecamatan Kab. OKI)');
+        }
+      } catch (err) {
+        console.error('Failed loading GeoJSON:', err);
+      } finally {
+        if (isMounted) {
+          setIsLoadingGeo(false);
+        }
+      }
+    };
+
+    loadGeoJson();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Initialize Leaflet Map instance once
+  useEffect(() => {
+    if (!mapContainerRef.current || mapInstanceRef.current) return;
+
+    const map = L.map(mapContainerRef.current, {
+      center: OKI_MAP_CENTER,
+      zoom: OKI_DEFAULT_ZOOM,
+      zoomControl: false,
+      attributionControl: true
+    });
+
+    mapInstanceRef.current = map;
+
+    return () => {
+      map.remove();
+      mapInstanceRef.current = null;
+    };
+  }, []);
+
+  // Manage Base Tile Layer switching
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current);
+      tileLayerRef.current = null;
+    }
+
+    if (baseMapStyle === 'blank') {
+      return;
+    }
+
+    let tileUrl = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+    let attribution = '&copy; OpenStreetMap &copy; CARTO | Peta Administrasi Kecamatan Kab. OKI';
+
+    if (baseMapStyle === 'osm') {
+      tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+      attribution = '&copy; OpenStreetMap contributors | Peta Administrasi Kecamatan Kab. OKI';
+    } else if (baseMapStyle === 'satellite') {
+      tileUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+      attribution = 'Tiles &copy; Esri | Peta Administrasi Kecamatan Kab. OKI';
+    }
+
+    const layer = L.tileLayer(tileUrl, {
+      maxZoom: 18,
+      attribution
+    });
+    layer.addTo(map);
+    layer.bringToBack();
+    tileLayerRef.current = layer;
+  }, [baseMapStyle]);
+
+  // Render GeoJSON Polygons with Distinct Kecamatan Colors + Click Popups + Labels
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !geoJsonData) return;
+
+    // Remove previous GeoJSON layer & label markers
+    if (geoJsonLayerRef.current) {
+      map.removeLayer(geoJsonLayerRef.current);
+      geoJsonLayerRef.current = null;
+    }
+    labelMarkersRef.current.forEach(m => map.removeLayer(m));
+    labelMarkersRef.current = [];
+    layerByKecNameRef.current = {};
+
+    const defaultZeroStats: KecamatanServiceStats = {
+      total: 0,
+      oss: 0,
+      ossNib: 0,
+      ossKegiatan: 0,
+      ossIzin: 0,
+      sicantik: 0,
+      simbg: 0,
+      selesai: 0,
+      proses: 0,
+      ditolak: 0,
+      investasiTotal: 0
+    };
+
+    const geoLayer = L.geoJSON(geoJsonData, {
+      style: (feature) => {
+        const kec = resolveKecamatanFromFeatureProps(feature?.properties) || OKI_KECAMATAN_GEO[0];
+        const isSelected =
+          (selectedKecamatan && selectedKecamatan !== 'SEMUA' && selectedKecamatan === kec.name) ||
+          activeKecamatan?.name === kec.name;
+
+        return {
+          fillColor: kec.color,
+          fillOpacity: isSelected ? Math.min(fillOpacity + 0.2, 0.92) : fillOpacity,
+          color: isSelected ? '#0f172a' : '#ffffff',
+          weight: isSelected ? 3 : 1.6,
+          opacity: 1,
+          dashArray: isSelected ? '' : '1'
+        };
+      },
+      onEachFeature: (feature, layer) => {
+        const kec = resolveKecamatanFromFeatureProps(feature?.properties);
+        if (!kec) return;
+
+        layerByKecNameRef.current[kec.name] = layer;
+        const st = statsByKecamatan[kec.name] || defaultZeroStats;
+
+        // Bind rich popup showing service data by source application
+        layer.bindPopup(buildPopupHtml(kec, st, feature.properties), {
+          className: 'dipta-kecamatan-popup',
+          maxWidth: 310,
+          minWidth: 280,
+          autoPanPadding: [24, 24]
+        });
+
+        // Bind hover tooltip
+        layer.bindTooltip(
+          `<div>
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${kec.color};margin-right:5px;"></span>
+            <strong>Kec. ${kec.name}</strong> • ${st.total} Berkas (OSS: ${st.oss} | SICANTIK: ${st.sicantik} | SIMBG: ${st.simbg})
+          </div>`,
+          {
+            sticky: true,
+            direction: 'top',
+            className: 'dipta-kecamatan-tooltip'
+          }
+        );
+
+        layer.on({
+          mouseover: (e) => {
+            const target = e.target;
+            target.setStyle({
+              weight: 3,
+              color: '#0f172a',
+              fillOpacity: Math.min(fillOpacity + 0.18, 0.92)
+            });
+            if (!L.Browser.ie && !L.Browser.opera && !L.Browser.edge) {
+              target.bringToFront();
+            }
+          },
+          mouseout: (e) => {
+            const isSelected =
+              (selectedKecamatan && selectedKecamatan !== 'SEMUA' && selectedKecamatan === kec.name) ||
+              activeKecamatan?.name === kec.name;
+            e.target.setStyle({
+              fillColor: kec.color,
+              fillOpacity: isSelected ? Math.min(fillOpacity + 0.2, 0.92) : fillOpacity,
+              color: isSelected ? '#0f172a' : '#ffffff',
+              weight: isSelected ? 3 : 1.6
+            });
+          },
+          click: (e) => {
+            setActiveKecamatan(kec);
+            const updatedStats = statsByKecamatan[kec.name] || defaultZeroStats;
+            layer.setPopupContent(buildPopupHtml(kec, updatedStats, feature.properties));
+            layer.openPopup(e.latlng);
+            if (onSelectKecamatan) {
+              onSelectKecamatan(kec.name);
+            }
+          }
+        });
+      }
+    });
+
+    geoLayer.addTo(map);
+    geoJsonLayerRef.current = geoLayer;
+
+    // Add interactive centroid badges for each of the 18 Kecamatan
+    if (showLabels) {
+      OKI_KECAMATAN_GEO.forEach(kec => {
+        const st = statsByKecamatan[kec.name] || defaultZeroStats;
+        const isSelected =
+          (selectedKecamatan && selectedKecamatan !== 'SEMUA' && selectedKecamatan === kec.name) ||
+          activeKecamatan?.name === kec.name;
+
+        const icon = L.divIcon({
+          className: 'dipta-kec-label-icon',
+          html: `
+            <div style="
+              transform: translate(-50%, -50%);
+              display: inline-flex;
+              align-items: center;
+              gap: 4px;
+              padding: 2px 7px;
+              border-radius: 999px;
+              background: ${isSelected ? '#0f172a' : 'rgba(255, 255, 255, 0.94)'};
+              color: ${isSelected ? '#ffffff' : '#0f172a'};
+              border: 1.5px solid ${kec.borderColor};
+              box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+              font-family: Inter, system-ui, sans-serif;
+              font-size: 10px;
+              font-weight: 700;
+              white-space: nowrap;
+              cursor: pointer;
+            ">
+              <span style="width: 7px; height: 7px; border-radius: 50%; background: ${kec.color}; display: inline-block; flex-shrink: 0;"></span>
+              <span>${kec.name}</span>
+              <span style="
+                background: ${kec.color};
+                color: #ffffff;
+                padding: 0px 5px;
+                border-radius: 999px;
+                font-size: 9px;
+                font-weight: 800;
+              ">${st.total}</span>
+            </div>
+          `,
+          iconSize: [0, 0]
+        });
+
+        const marker = L.marker([kec.center[0], kec.center[1]], { icon });
+        marker.on('click', () => {
+          setActiveKecamatan(kec);
+          const polyLayer: any = layerByKecNameRef.current[kec.name];
+          if (polyLayer) {
+            if (polyLayer.getBounds) {
+              map.fitBounds(polyLayer.getBounds(), { padding: [40, 40], maxZoom: 11 });
+            }
+            polyLayer.setPopupContent(buildPopupHtml(kec, st));
+            polyLayer.openPopup([kec.center[0], kec.center[1]]);
+          } else {
+            map.setView([kec.center[0], kec.center[1]], 11);
+          }
+          if (onSelectKecamatan) {
+            onSelectKecamatan(kec.name);
+          }
+        });
+
+        marker.addTo(map);
+        labelMarkersRef.current.push(marker);
+      });
+    }
+  }, [geoJsonData, statsByKecamatan, showLabels, fillOpacity, selectedKecamatan, activeKecamatan, buildPopupHtml, onSelectKecamatan]);
+
+  // Fit bounds on initial GeoJSON load
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const layer = geoJsonLayerRef.current;
+    if (!map || !layer) return;
+    try {
+      const bounds = layer.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [18, 18] });
+      }
+    } catch {
+      // Ignore bounds error
+    }
+  }, [geoJsonData]);
+
+  // Focus & open popup when user clicks a Kecamatan from the quick list below the map
+  const handleSelectKecamatanFromList = (kec: KecamatanGeo) => {
     setActiveKecamatan(kec);
-    mapActionRef.current?.focusKecamatanByGoogleMaps(kec);
+    const map = mapInstanceRef.current;
+    const polyLayer: any = layerByKecNameRef.current[kec.name];
+    const st = statsByKecamatan[kec.name] || {
+      total: 0,
+      oss: 0,
+      ossNib: 0,
+      ossKegiatan: 0,
+      ossIzin: 0,
+      sicantik: 0,
+      simbg: 0,
+      selesai: 0,
+      proses: 0,
+      ditolak: 0,
+      investasiTotal: 0
+    };
+
+    if (map && polyLayer) {
+      if (polyLayer.getBounds) {
+        map.fitBounds(polyLayer.getBounds(), { padding: [45, 45], maxZoom: 11 });
+      }
+      polyLayer.setPopupContent(buildPopupHtml(kec, st));
+      polyLayer.openPopup([kec.center[0], kec.center[1]]);
+    } else if (map) {
+      map.setView([kec.center[0], kec.center[1]], 11);
+    }
+
     if (onSelectKecamatan) {
       onSelectKecamatan(kec.name);
     }
   };
 
-  const activeStats = activeKecamatan
-    ? statsByKecamatan[activeKecamatan.name]
-    : null;
+  // Allow user to upload a custom GeoJSON file directly if they want to replace/update the polygon boundaries
+  const handleUploadGeoJsonFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const text = String(evt.target?.result || '');
+        const parsed = JSON.parse(text);
+        if (!parsed || !Array.isArray(parsed.features)) {
+          setUploadFeedback('Format file bukan FeatureCollection GeoJSON yang valid.');
+          return;
+        }
+        setGeoJsonData(parsed);
+        setGeoSourceLabel(`${file.name} (${parsed.features.length} Poligon Wilayah)`);
+        try {
+          localStorage.setItem(CUSTOM_GEOJSON_STORAGE_KEY, text);
+        } catch {
+          // Ignore if GeoJSON is larger than localStorage quota
+        }
+        setUploadFeedback(`Berhasil memuat peta wilayah "${file.name}" (${parsed.features.length} poligon kecamatan)!`);
+        setTimeout(() => setUploadFeedback(null), 5000);
+      } catch (err: any) {
+        setUploadFeedback(`Gagal membaca file GeoJSON: ${err?.message || 'File rusak'}`);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const activeStats = activeKecamatan ? statsByKecamatan[activeKecamatan.name] : null;
 
   return (
     <div className="space-y-3">
       {/* Top Header & Map Controls */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/80 p-3 rounded-xl border border-slate-200">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-slate-50/90 p-3.5 rounded-xl border border-slate-200">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center">
-            <Globe2 className="w-4 h-4" />
+          <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs shrink-0">
+            <MapIcon className="w-4 h-4" />
           </div>
           <div>
-            <h4 className="text-xs font-bold text-slate-900">
-              Peta Geospasial Google Maps — Kabupaten Ogan Komering Ilir
-            </h4>
-            <p className="text-[11px] text-slate-500">
-              Menggunakan batas wilayah kecamatan resmi dari Google Maps Platform & layer kerapatan permohonan layanan
+            <div className="flex items-center gap-2 flex-wrap">
+              <h4 className="text-xs sm:text-sm font-bold text-slate-900">
+                Peta Interaktif Administrasi 18 Kecamatan — Kabupaten Ogan Komering Ilir
+              </h4>
+              <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                18 Warna Wilayah Kecamatan
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Sumber Geospasial: <strong className="text-slate-700">{geoSourceLabel}</strong> — Klik wilayah kecamatan pada peta untuk melihat pop-up rincian data pelayanan per sumber aplikasi.
             </p>
           </div>
         </div>
 
-        {/* Google Maps Layer Switcher */}
+        {/* Layer & Upload Controls */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="px-2.5 py-1 rounded-md bg-emerald-600 text-white text-[11px] font-semibold shadow-xs">
-            Google Maps Platform
-          </span>
-
-          {/* Sub-layers for Google Maps */}
-          <select
-            value={googleType}
-            onChange={e => setGoogleType(e.target.value as GoogleMapType)}
-            className="bg-white border border-slate-300 text-slate-700 text-[11px] font-medium rounded-lg px-2.5 py-1.5 focus:outline-none"
-          >
-            <option value="roadmap">Google Roadmap (Batas Administrasi)</option>
-            <option value="terrain">Terrain (Batas Wilayah & Kontur)</option>
-            <option value="hybrid">Hibrida (Satelit + Batas Wilayah)</option>
-            <option value="satellite">Citra Satelit Murni</option>
-          </select>
-
-          {/* Google Maps External Place Link */}
-          <a
-            href={
-              activeKecamatan
-                ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                    `Kecamatan ${activeKecamatan.name}, Kabupaten Ogan Komering Ilir, Sumatera Selatan`
-                  )}`
-                : 'https://www.google.com/maps/place/Kabupaten+Ogan+Komering+Ilir,+Sumatera+Selatan/@-3.3068054,104.9174473,9.11z/data=!4m6!3m5!1s0x2e3c0d6d1a62ce07:0x3039d80b220d0e0!8m2!3d-3.4559744!4d105.2194808!16s%2Fm%2F0gg6c6n?entry=ttu'
-            }
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Lihat Batas Wilayah Resmi di Google Maps"
-            className="flex items-center gap-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
-          >
-            <ExternalLink className="w-3 h-3 text-slate-500" />
-            <span className="hidden md:inline">
-              {activeKecamatan ? `Batas Kec. ${activeKecamatan.name}` : 'Buka di Google Maps'}
-            </span>
-          </a>
-        </div>
-      </div>
-
-      {/* HEATMAP & MARKER INTERACTIVE TOOLBAR */}
-      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <button
-            onClick={() => setShowHeatmap(!showHeatmap)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs transition-all ${
-              showHeatmap
-                ? 'bg-gradient-to-r from-amber-500 to-rose-600 text-white shadow-xs'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300'
-            }`}
-          >
-            <Flame className={`w-4 h-4 ${showHeatmap ? 'text-yellow-200 animate-pulse' : 'text-slate-500'}`} />
-            <span>Zona Kerapatan {showHeatmap ? 'Aktif' : 'Non-Aktif'}</span>
-          </button>
-
-          <button
-            onClick={() => setShowMarkers(!showMarkers)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              showMarkers
-                ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 font-semibold'
-                : 'bg-slate-100 text-slate-600 border border-slate-300'
-            }`}
-          >
-            {showMarkers ? <Eye className="w-3.5 h-3.5 text-emerald-600" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
-            <span>Penanda 18 Kecamatan</span>
-          </button>
-
-          <div className="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200 text-[11px] text-slate-600">
-            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-            <span>
-              <strong>{heatmapPoints.length}</strong> titik sebaran ({records.length} berkas)
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-1">
-            <Filter className="w-3.5 h-3.5 text-slate-500" />
+          <div className="flex items-center gap-1.5 bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-[11px]">
+            <Layers className="w-3.5 h-3.5 text-emerald-600" />
             <select
-              value={heatmapDataset}
-              onChange={e => setHeatmapDataset(e.target.value as HeatmapDatasetFilter)}
-              className="bg-slate-50 border border-slate-300 text-slate-800 font-medium rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              value={baseMapStyle}
+              onChange={e => setBaseMapStyle(e.target.value as BaseMapStyle)}
+              className="bg-transparent text-slate-700 font-semibold focus:outline-none cursor-pointer"
             >
-              <option value="ALL">Kerapatan: Semua Layanan</option>
-              <option value="OSS-RBA">Kerapatan: OSS-RBA Saja</option>
-              <option value="SICANTIK">Kerapatan: SICANTIK Saja</option>
-              <option value="SIMBG">Kerapatan: SIMBG Saja</option>
+              <option value="clean">Peta Dasar Terang (Fokus Warna Kecamatan)</option>
+              <option value="osm">OpenStreetMap Standar</option>
+              <option value="satellite">Citra Satelit + Poligon Kecamatan</option>
+              <option value="blank">Kanvas Poligon Murni (Tanpa Latar)</option>
             </select>
           </div>
 
           <button
-            onClick={() => setShowHeatmapSettings(!showHeatmapSettings)}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-medium transition-colors ${
-              showHeatmapSettings
-                ? 'bg-emerald-100 border-emerald-400 text-emerald-900 font-semibold'
-                : 'bg-slate-50 border-slate-300 text-slate-700 hover:bg-slate-100'
+            type="button"
+            onClick={() => setShowLabels(!showLabels)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer ${
+              showLabels
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
             }`}
           >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>Radius: {heatmapRadius}px</span>
+            {showLabels ? <Eye className="w-3.5 h-3.5 text-emerald-600" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
+            <span>Label & Angka Kecamatan</span>
           </button>
+
+          <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-semibold transition-colors cursor-pointer">
+            <Upload className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Upload GeoJSON Wilayah</span>
+            <input
+              type="file"
+              accept=".geojson,.json"
+              onChange={handleUploadGeoJsonFile}
+              className="hidden"
+            />
+          </label>
         </div>
       </div>
 
-      {/* Collapsible Radius Adjuster */}
-      {showHeatmapSettings && (
-        <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs animate-in fade-in slide-in-from-top-1">
-          <div className="flex items-center gap-2">
-            <Flame className="w-4 h-4 text-amber-600" />
-            <span className="font-semibold text-amber-900">
-              Pengaturan Radius Sebaran Termal:
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-[11px] text-amber-800">Fokus (15px)</span>
-            <input
-              type="range"
-              min="15"
-              max="50"
-              step="3"
-              value={heatmapRadius}
-              onChange={e => setHeatmapRadius(Number(e.target.value))}
-              className="w-36 accent-amber-600 cursor-pointer"
-            />
-            <span className="text-[11px] text-amber-800">Luas (50px)</span>
-            <span className="font-mono font-bold text-amber-900 bg-white px-2 py-0.5 rounded border border-amber-300">
-              {heatmapRadius}px
-            </span>
-          </div>
+      {uploadFeedback && (
+        <div className="px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-medium flex items-center justify-between">
+          <span>{uploadFeedback}</span>
+          <button
+            type="button"
+            onClick={() => setUploadFeedback(null)}
+            className="text-emerald-700 hover:text-emerald-950 font-bold text-xs"
+          >
+            Tutup
+          </button>
         </div>
       )}
 
-      {/* Map Display & Canvas (Explicit height required per CF2) */}
-      <div className="relative w-full h-[460px] rounded-xl overflow-hidden border border-slate-300 shadow-inner bg-slate-100">
-        <APIProvider apiKey={GOOGLE_MAPS_API_KEY} libraries={['marker', 'places']} language="id" region="ID">
-          <Map
-            mapId="DEMO_MAP_ID"
-            defaultCenter={{ lat: OKI_MAP_CENTER[0], lng: OKI_MAP_CENTER[1] }}
-            defaultZoom={OKI_DEFAULT_ZOOM}
-            mapTypeId={googleType}
-            gestureHandling="cooperative"
-            disableDefaultUI={true}
-            internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-            className="w-full h-full"
-          >
-            <OkiMapOverlays
-              googleType={googleType}
-              showHeatmap={showHeatmap}
-              heatmapRadius={heatmapRadius}
-              heatmapPoints={heatmapPoints}
-              onPlaceViewportResolved={handlePlaceViewportResolved}
-              mapActionRef={mapActionRef}
-            />
+      {/* Interactive Opacity & Summary Bar */}
+      <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-semibold text-[11px]">
+            <Building2 className="w-3.5 h-3.5 text-emerald-600" />
+            <span>OSS-RBA: {records.filter(r => r.sumber_aplikasi === 'OSS-RBA').length}</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 border border-sky-200 text-sky-800 font-semibold text-[11px]">
+            <FileCheck2 className="w-3.5 h-3.5 text-sky-600" />
+            <span>SICANTIK: {records.filter(r => r.sumber_aplikasi === 'SICANTIK').length}</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 font-semibold text-[11px]">
+            <Landmark className="w-3.5 h-3.5 text-amber-600" />
+            <span>SIMBG: {records.filter(r => r.sumber_aplikasi === 'SIMBG').length}</span>
+          </span>
+        </div>
 
-            {/* Modern AdvancedMarker for each of the 18 Kecamatan */}
-            {showMarkers &&
-              OKI_KECAMATAN_GEO.map(kec => {
-                const stats = statsByKecamatan[kec.name] || {
-                  total: 0,
-                  oss: 0,
-                  sicantik: 0,
-                  simbg: 0
-                };
-                const isSelected = selectedKecamatan === kec.name || activeKecamatan?.name === kec.name;
+        <div className="flex items-center gap-2.5">
+          <span className="text-[11px] text-slate-600 font-medium">Ketebalan Warna Wilayah:</span>
+          <input
+            type="range"
+            min="0.3"
+            max="0.9"
+            step="0.05"
+            value={fillOpacity}
+            onChange={e => setFillOpacity(Number(e.target.value))}
+            className="w-24 accent-emerald-600 cursor-pointer"
+          />
+          <span className="text-[11px] font-mono font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded">
+            {Math.round(fillOpacity * 100)}%
+          </span>
+        </div>
+      </div>
 
-                return (
-                  <AdvancedMarker
-                    key={kec.id}
-                    position={{ lat: kec.center[0], lng: kec.center[1] }}
-                    title={`Kecamatan ${kec.name} (${stats.total} berkas) — Klik untuk fokus ke batas wilayah Google Maps`}
-                    onClick={() => handleKecamatanSelect(kec)}
-                  >
-                    <div
-                      className={`flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold shadow-sm whitespace-nowrap transition-transform cursor-pointer ${
-                        isSelected
-                          ? 'bg-emerald-700 text-white border-emerald-900 scale-110 ring-2 ring-emerald-300'
-                          : 'bg-white/95 text-slate-800 border-slate-300 hover:scale-105'
-                      }`}
-                    >
-                      <MapPin className={`w-2.5 h-2.5 ${isSelected ? 'text-emerald-200' : 'text-emerald-600'}`} />
-                      <span>{kec.name}</span>
-                      <span
-                        className={`px-1 py-0.2 rounded text-[9px] font-bold ${
-                          isSelected
-                            ? 'bg-white text-emerald-800'
-                            : 'bg-emerald-600 text-white'
-                        }`}
-                      >
-                        {stats.total}
-                      </span>
-                    </div>
-                  </AdvancedMarker>
-                );
-              })}
+      {/* Main Leaflet Map Canvas */}
+      <div className="relative w-full h-[500px] rounded-xl overflow-hidden border border-slate-300 shadow-inner bg-slate-100">
+        {isLoadingGeo && (
+          <div className="absolute inset-0 z-30 bg-white/80 backdrop-blur-xs flex items-center justify-center">
+            <div className="text-center space-y-2">
+              <div className="w-8 h-8 border-3 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-xs font-semibold text-slate-700">
+                Memuat Poligon Peta Administrasi 18 Kecamatan Kab. OKI...
+              </p>
+            </div>
+          </div>
+        )}
 
-            {/* InfoWindow when a Kecamatan is clicked */}
-            {infoWindowState && (
-              <InfoWindow
-                position={infoWindowState.position}
-                onCloseClick={() => setInfoWindowState(null)}
-              >
-                <div className="min-w-[205px] p-1 text-slate-800">
-                  <div className="font-bold text-slate-900 text-xs">
-                    Kecamatan {infoWindowState.kec.name}
-                  </div>
-                  <div className="text-[10px] text-slate-500 mb-1.5">
-                    {infoWindowState.formattedAddress || `Ibu kota: ${infoWindowState.kec.capital}, Kab. OKI`}
-                  </div>
-                  <div className="flex justify-between text-[11px] mb-1">
-                    <span>Total Pelayanan:</span>
-                    <strong className="text-emerald-700">
-                      {statsByKecamatan[infoWindowState.kec.name]?.total || 0} berkas
-                    </strong>
-                  </div>
-                  <div className="flex justify-between text-[10px] text-slate-600 gap-2">
-                    <span>OSS: {statsByKecamatan[infoWindowState.kec.name]?.oss || 0}</span>
-                    <span>SICANTIK: {statsByKecamatan[infoWindowState.kec.name]?.sicantik || 0}</span>
-                    <span>SIMBG: {statsByKecamatan[infoWindowState.kec.name]?.simbg || 0}</span>
-                  </div>
-                  <div className="mt-1.5 pt-1 border-t border-slate-200 flex items-center justify-between text-[10px] text-slate-500">
-                    <span>Luas: {infoWindowState.kec.areaKm2} km²</span>
-                    <a
-                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                        `Kecamatan ${infoWindowState.kec.name}, Kabupaten Ogan Komering Ilir, Sumatera Selatan`
-                      )}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-emerald-700 hover:underline font-semibold flex items-center gap-0.5"
-                    >
-                      <span>Batas Google Maps</span>
-                      <ExternalLink className="w-2.5 h-2.5" />
-                    </a>
-                  </div>
-                </div>
-              </InfoWindow>
-            )}
-          </Map>
-        </APIProvider>
+        <div ref={mapContainerRef} className="w-full h-full z-10" />
 
         {/* Custom Zoom & Reset Controls */}
-        <div className="absolute top-3 right-3 z-20 flex flex-col gap-1.5 bg-white rounded-lg shadow-md border border-slate-200 p-1">
+        <div className="absolute top-3 right-3 z-20 flex flex-col gap-1.5 bg-white rounded-xl shadow-md border border-slate-200 p-1">
           <button
-            onClick={() => mapActionRef.current?.zoomIn()}
+            type="button"
+            onClick={() => mapInstanceRef.current?.zoomIn()}
             title="Perbesar Peta"
-            className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition-colors"
+            className="p-1.5 hover:bg-slate-100 text-slate-700 rounded-lg transition-colors cursor-pointer"
           >
             <ZoomIn className="w-4 h-4" />
           </button>
           <button
-            onClick={() => mapActionRef.current?.zoomOut()}
+            type="button"
+            onClick={() => mapInstanceRef.current?.zoomOut()}
             title="Perkecil Peta"
-            className="p-1.5 hover:bg-slate-100 text-slate-700 rounded transition-colors"
+            className="p-1.5 hover:bg-slate-100 text-slate-700 rounded-lg transition-colors cursor-pointer"
           >
             <ZoomOut className="w-4 h-4" />
           </button>
           <div className="h-[1px] bg-slate-200 my-0.5" />
           <button
+            type="button"
             onClick={() => {
               setActiveKecamatan(null);
-              setInfoWindowState(null);
-              mapActionRef.current?.resetCenter();
+              const map = mapInstanceRef.current;
+              const layer = geoJsonLayerRef.current;
+              if (map) {
+                map.closePopup();
+                if (layer && layer.getBounds().isValid()) {
+                  map.fitBounds(layer.getBounds(), { padding: [18, 18] });
+                } else {
+                  map.setView(OKI_MAP_CENTER, OKI_DEFAULT_ZOOM);
+                }
+              }
               if (onSelectKecamatan) {
                 onSelectKecamatan('SEMUA');
               }
             }}
-            title="Pusatkan ke Kabupaten OKI"
-            className="p-1.5 hover:bg-slate-100 text-emerald-700 rounded transition-colors"
+            title="Reset Fokus ke Seluruh Wilayah Kabupaten OKI"
+            className="p-1.5 hover:bg-slate-100 text-emerald-700 rounded-lg transition-colors cursor-pointer"
           >
             <RotateCcw className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Legend Overlay at Bottom-Left */}
-        <div className="absolute bottom-3 left-3 z-20 bg-white/95 backdrop-blur-xs p-3 rounded-xl shadow-lg border border-slate-200 text-[10px] text-slate-700 space-y-2 max-w-[240px]">
-          {showHeatmap && (
-            <div>
-              <div className="font-bold text-slate-900 flex items-center justify-between mb-1.5">
-                <span className="flex items-center gap-1 text-rose-700 font-bold">
-                  <Flame className="w-3.5 h-3.5" />
-                  Kerapatan Pelayanan
-                </span>
-                <span className="text-[9px] bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded font-semibold">
-                  Density
-                </span>
-              </div>
-              <div className="h-3 w-full rounded-md bg-gradient-to-r from-emerald-400 via-yellow-400 via-orange-500 to-rose-600 shadow-xs border border-slate-300 mb-1"></div>
-              <div className="flex justify-between text-[9px] text-slate-600 font-medium">
-                <span>Rendah</span>
-                <span>Sedang</span>
-                <span>Padat / Tinggi</span>
-              </div>
-            </div>
-          )}
-
-          <div className="pt-1 border-t border-slate-200 text-[9px] text-slate-600 leading-tight">
-            Batas wilayah menggunakan peta administrasi resmi <strong>Google Maps</strong>. Klik salah satu kecamatan untuk menyesuaikan cakupan wilayah (<em>viewport</em>).
+        {/* Bottom-Left Instruction Legend */}
+        <div className="absolute bottom-3 left-3 z-20 bg-white/95 backdrop-blur-xs p-3 rounded-xl shadow-lg border border-slate-200 text-[10px] text-slate-700 max-w-[265px] space-y-1.5">
+          <div className="font-bold text-slate-900 flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
+            <span>Petunjuk Interaksi Peta Kecamatan</span>
           </div>
+          <p className="text-[10px] text-slate-600 leading-relaxed">
+            Setiap kecamatan memiliki warna wilayah berbeda. <strong>Klik poligon kecamatan</strong> untuk menampilkan pop-up rincian data pelayanan dari <strong>OSS-RBA</strong>, <strong>SICANTIK Cloud</strong>, dan <strong>SIMBG</strong>.
+          </p>
         </div>
 
-        {/* Active Kecamatan Quick Card (Click Detail) at Bottom-Right */}
+        {/* Active Kecamatan Floating Detail Card at Bottom-Right */}
         {activeKecamatan && activeStats && (
-          <div className="absolute bottom-3 right-3 z-20 bg-white/95 backdrop-blur-xs p-3.5 rounded-xl shadow-lg border border-slate-200 text-xs text-slate-800 max-w-xs animate-in fade-in slide-in-from-bottom-2">
-            <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 mb-2">
-              <div>
-                <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wider">
-                  Kecamatan Terpilih
-                </span>
-                <h5 className="font-bold text-slate-900 text-sm">
-                  {activeKecamatan.name}
-                </h5>
+          <div className="hidden md:block absolute bottom-3 right-3 z-20 bg-white/95 backdrop-blur-xs p-3.5 rounded-xl shadow-lg border border-slate-200 text-xs text-slate-800 w-72 animate-in fade-in slide-in-from-bottom-2">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-2">
+              <div className="flex items-center gap-2">
+                <span
+                  className="w-3.5 h-3.5 rounded-full shrink-0 border border-white shadow-xs"
+                  style={{ backgroundColor: activeKecamatan.color }}
+                />
+                <div>
+                  <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+                    Kecamatan Aktif
+                  </span>
+                  <h5 className="font-bold text-slate-900 text-sm leading-tight">
+                    {activeKecamatan.name}
+                  </h5>
+                </div>
               </div>
-              <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[11px]">
+              <span
+                className="font-extrabold px-2 py-0.5 rounded-full text-[11px] text-white"
+                style={{ backgroundColor: activeKecamatan.borderColor }}
+              >
                 {activeStats.total} Berkas
               </span>
             </div>
 
-            <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] mb-2 bg-slate-50 p-2 rounded-lg border border-slate-100">
-              <div>
-                <span className="text-slate-500 block">OSS-RBA</span>
-                <strong className="text-slate-900">{activeStats.oss}</strong>
+            <div className="space-y-1.5 mb-2.5">
+              <div className="flex items-center justify-between text-[11px] bg-emerald-50/80 border border-emerald-200/70 px-2.5 py-1 rounded-lg">
+                <span className="font-semibold text-emerald-900">1. OSS-RBA</span>
+                <strong className="text-emerald-700">{activeStats.oss} berkas</strong>
               </div>
-              <div>
-                <span className="text-slate-500 block">SICANTIK</span>
-                <strong className="text-slate-900">{activeStats.sicantik}</strong>
+              <div className="flex items-center justify-between text-[11px] bg-sky-50/80 border border-sky-200/70 px-2.5 py-1 rounded-lg">
+                <span className="font-semibold text-sky-900">2. SICANTIK Cloud</span>
+                <strong className="text-sky-700">{activeStats.sicantik} berkas</strong>
               </div>
-              <div>
-                <span className="text-slate-500 block">SIMBG</span>
-                <strong className="text-slate-900">{activeStats.simbg}</strong>
+              <div className="flex items-center justify-between text-[11px] bg-amber-50/80 border border-amber-200/70 px-2.5 py-1 rounded-lg">
+                <span className="font-semibold text-amber-900">3. SIMBG (PBG/SLF)</span>
+                <strong className="text-amber-700">{activeStats.simbg} berkas</strong>
               </div>
             </div>
 
-            <div className="text-[10px] text-slate-500 space-y-0.5">
-              <div>Ibu kota: <strong className="text-slate-700">{activeKecamatan.capital}</strong></div>
-              <div>Luas: <strong className="text-slate-700">{activeKecamatan.areaKm2} km²</strong></div>
-              <div className="line-clamp-2 pt-1 text-slate-600 italic">
-                "{activeKecamatan.description}"
+            <div className="grid grid-cols-3 gap-1 text-center text-[10px] bg-slate-50 p-1.5 rounded-lg border border-slate-200 mb-2">
+              <div>
+                <span className="text-slate-500 block">Terbit</span>
+                <strong className="text-emerald-700">{activeStats.selesai}</strong>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Proses</span>
+                <strong className="text-amber-600">{activeStats.proses}</strong>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Ditolak</span>
+                <strong className="text-rose-600">{activeStats.ditolak}</strong>
               </div>
             </div>
 
             {onSelectKecamatan && (
-              <button
-                onClick={() => onSelectKecamatan(activeKecamatan.name)}
-                className="w-full mt-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold text-[11px] transition-colors flex items-center justify-center gap-1"
-              >
-                <Navigation className="w-3 h-3" />
-                <span>Filter Dashboard Kecamatan Ini</span>
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onSelectKecamatan(activeKecamatan.name)}
+                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold text-[11px] transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Filter className="w-3 h-3" />
+                  <span>Filter Kecamatan Ini</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveKecamatan(null);
+                    mapInstanceRef.current?.closePopup();
+                    if (onSelectKecamatan) onSelectKecamatan('SEMUA');
+                  }}
+                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold text-[11px] transition-colors cursor-pointer"
+                >
+                  Reset
+                </button>
+              </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Grid of 18 Kecamatan Chips for Quick Navigation */}
+      {/* Color Legend & Quick Selector for All 18 Kecamatan */}
       <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2.5">
           <span className="text-xs font-bold text-slate-800">
-            Daftar 18 Kecamatan Kabupaten Ogan Komering Ilir (Klik untuk fokus ke batas wilayah Google Maps)
+            Legenda Warna & Direktori 18 Kecamatan Kabupaten Ogan Komering Ilir (Klik untuk Fokus & Buka Pop-Up Data Pelayanan)
           </span>
-          <span className="text-[11px] text-slate-500">
-            Terpusat di Kayu Agung (-3.4559744, 105.2194808)
-          </span>
+          {selectedKecamatan && selectedKecamatan !== 'SEMUA' && (
+            <button
+              type="button"
+              onClick={() => {
+                setActiveKecamatan(null);
+                mapInstanceRef.current?.closePopup();
+                if (onSelectKecamatan) onSelectKecamatan('SEMUA');
+              }}
+              className="text-[11px] text-emerald-700 hover:text-emerald-900 font-bold underline cursor-pointer self-start sm:self-auto"
+            >
+              Tampilkan Semua Kecamatan
+            </button>
+          )}
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-1.5 text-xs">
           {OKI_KECAMATAN_GEO.map(k => {
-            const stats = statsByKecamatan[k.name] || { total: 0 };
-            const isSelected = selectedKecamatan === k.name || activeKecamatan?.name === k.name;
+            const st = statsByKecamatan[k.name] || { total: 0, oss: 0, sicantik: 0, simbg: 0 };
+            const isSelected =
+              (selectedKecamatan && selectedKecamatan !== 'SEMUA' && selectedKecamatan === k.name) ||
+              activeKecamatan?.name === k.name;
+
             return (
               <button
                 key={k.id}
-                onClick={() => handleKecamatanSelect(k)}
-                className={`p-1.5 rounded-lg border text-left transition-all flex items-center justify-between ${
+                type="button"
+                onClick={() => handleSelectKecamatanFromList(k)}
+                className={`p-2 rounded-lg border text-left transition-all cursor-pointer ${
                   isSelected
-                    ? 'border-emerald-600 bg-emerald-50 text-emerald-900 font-bold'
-                    : 'border-slate-200 bg-slate-50/50 hover:bg-slate-100 text-slate-700'
+                    ? 'border-slate-900 bg-slate-900 text-white shadow-sm scale-[1.02]'
+                    : 'border-slate-200 bg-slate-50/60 hover:bg-white hover:border-slate-300 text-slate-800'
                 }`}
               >
-                <span className="truncate pr-1 text-[11px]">{k.name}</span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
-                    stats.total > 0
-                      ? 'bg-emerald-200 text-emerald-800 font-bold'
-                      : 'bg-slate-200 text-slate-500'
+                <div className="flex items-center justify-between gap-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className="w-3 h-3 rounded-full shrink-0 border border-white/80 shadow-2xs"
+                      style={{ backgroundColor: k.color }}
+                    />
+                    <span className="truncate font-bold text-[11px]">{k.name}</span>
+                  </div>
+                  <span
+                    className="text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold text-white shrink-0"
+                    style={{ backgroundColor: k.borderColor }}
+                  >
+                    {st.total}
+                  </span>
+                </div>
+                <div
+                  className={`flex items-center justify-between text-[9px] mt-1 pt-1 border-t ${
+                    isSelected ? 'border-slate-700 text-slate-300' : 'border-slate-200/80 text-slate-500'
                   }`}
                 >
-                  {stats.total}
-                </span>
+                  <span>OSS: {st.oss}</span>
+                  <span>SIC: {st.sicantik}</span>
+                  <span>PBG: {st.simbg}</span>
+                </div>
               </button>
             );
           })}
