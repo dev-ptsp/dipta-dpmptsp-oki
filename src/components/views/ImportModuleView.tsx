@@ -304,11 +304,11 @@ export const ImportModuleView: React.FC<ImportModuleViewProps> = ({
     processDataRows(headers, sample, `sample_${selectedDataset.toLowerCase()}_kab_oki.xlsx`);
   };
 
-  // Confirm Import
-  const handleConfirmImport = () => {
+  // Confirm Import (Directly saves to Supabase Cloud Database so all devices share identical data)
+  const handleConfirmImport = async () => {
     if (validationResults.validRecords.length === 0) return;
     setIsProcessing(true);
-    setTimeout(() => {
+    try {
       const newBatchId = `BATCH-${Date.now()}`;
       const countValid = validationResults.validRecords.length;
       const countInvalid = validationResults.invalidRows.length;
@@ -327,10 +327,10 @@ export const ImportModuleView: React.FC<ImportModuleViewProps> = ({
         row_invalid: countInvalid,
         row_duplicate: countDuplicate,
         import_status: countInvalid === 0 ? 'BERHASIL' : countValid > 0 ? 'SEBAGIAN' : 'GAGAL',
-        notes: `Import melalui modul wizard DIPTA (${selectedDataset})`
+        notes: `Import langsung ke Supabase Cloud (${selectedDataset})`
       };
 
-      // Add records into storage (preserve nib, id_proyek, and all domain fields!)
+      // Add records into Supabase Cloud storage (preserve nib, id_proyek, and all domain fields!)
       const fullRecordsToSave: DiptaRecord[] = validationResults.validRecords.map((partial, i) => ({
         id_dipta: partial.id_dipta || `DIPTA-${Date.now()}-${i + 1}`,
         batch_id: newBatchId,
@@ -374,11 +374,13 @@ export const ImportModuleView: React.FC<ImportModuleViewProps> = ({
         operator_update: currentUser.full_name
       }));
 
-      DiptaStorageService.addBatch(newBatch, fullRecordsToSave);
+      await DiptaStorageService.addBatch(newBatch, fullRecordsToSave);
       setCompletedBatch(newBatch);
-      setIsProcessing(false);
+      onImportSuccess();
       setCurrentStep(3);
-    }, 400);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (

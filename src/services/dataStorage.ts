@@ -35,7 +35,8 @@ const STORAGE_KEYS = {
   USERS: 'dipta_users_v2'
 };
 
-// In-memory store so the app works seamlessly with 50,000+ records even when browser localStorage reaches its ~5MB quota
+// In-memory runtime state synchronized directly with Supabase Cloud PostgreSQL
+// (Eliminates browser-specific localStorage divergence so all devices always see the exact same data)
 const MEMORY_CACHE: {
   records: DiptaRecord[] | null;
   mappings: StatusMappingRule[] | null;
@@ -43,13 +44,17 @@ const MEMORY_CACHE: {
   issues: DataQualityIssue[] | null;
   audit: AuditLog[] | null;
   users: User[] | null;
+  currentUser: User | null;
+  lastUpdate: string | null;
 } = {
   records: null,
   mappings: null,
   batches: null,
   issues: null,
   audit: null,
-  users: null
+  users: null,
+  currentUser: null,
+  lastUpdate: null
 };
 
 // Strip undefined/empty properties from records to reduce JSON payload size by ~40%
@@ -65,76 +70,62 @@ function compactRecords<T extends Record<string, any>>(items: T[]): T[] {
   });
 }
 
-// Safe wrapper around localStorage.setItem that never throws QuotaExceededError
-function safeSetItem(key: string, value: any): boolean {
+// Purge legacy localStorage dataset keys so no device can ever display stale device-local data
+function purgeLegacyLocalStorageData(): void {
   try {
-    const str = typeof value === 'string' ? value : JSON.stringify(value);
-    localStorage.setItem(key, str);
-    return true;
-  } catch (err: any) {
-    // QuotaExceededError fallback: if saving an array, try saving a trimmed slice to localStorage while keeping full array in MEMORY_CACHE
-    if (Array.isArray(value)) {
-      const limits = [3000, 1500, 500, 100];
-      for (const limit of limits) {
-        if (value.length > limit) {
-          try {
-            localStorage.setItem(key, JSON.stringify(value.slice(0, limit)));
-            return true;
-          } catch {
-            // Try smaller slice
-          }
-        }
-      }
+    const keysToPurge = [
+      STORAGE_KEYS.RECORDS,
+      STORAGE_KEYS.MAPPINGS,
+      STORAGE_KEYS.BATCHES,
+      STORAGE_KEYS.ISSUES,
+      STORAGE_KEYS.AUDIT,
+      STORAGE_KEYS.USERS,
+      'dipta_records_v1',
+      'dipta_batches_v1',
+      'dipta_issues_v1',
+      'dipta_audit_v1',
+      'dipta_records',
+      'dipta_batches',
+      'dipta_issues',
+      'dipta_audit'
+    ];
+    for (const k of keysToPurge) {
+      localStorage.removeItem(k);
     }
-    return false;
+  } catch {
+    // Ignore if localStorage unavailable
   }
 }
 
 export class DiptaStorageService {
-  // Initialize storage: purge old mock records and ensure clean state
+  // Initialize storage: purge all legacy device-local data and initialize in-memory state from Supabase
   static init(): void {
-    try {
-      // Purge old mock storage keys from browser cache
-      localStorage.removeItem('dipta_records_v1');
-      localStorage.removeItem('dipta_batches_v1');
-      localStorage.removeItem('dipta_issues_v1');
-      localStorage.removeItem('dipta_audit_v1');
-    } catch {
-      // Ignore if localStorage unavailable
-    }
+    purgeLegacyLocalStorageData();
 
-    try {
-      if (!localStorage.getItem(STORAGE_KEYS.RECORDS)) {
-        safeSetItem(STORAGE_KEYS.RECORDS, INITIAL_DIPTA_RECORDS);
-      }
-      if (!localStorage.getItem(STORAGE_KEYS.MAPPINGS)) {
-        safeSetItem(STORAGE_KEYS.MAPPINGS, INITIAL_STATUS_MAPPINGS);
-      }
-      if (!localStorage.getItem(STORAGE_KEYS.BATCHES)) {
-        safeSetItem(STORAGE_KEYS.BATCHES, INITIAL_IMPORT_BATCHES);
-      }
-      if (!localStorage.getItem(STORAGE_KEYS.ISSUES)) {
-        safeSetItem(STORAGE_KEYS.ISSUES, INITIAL_DATA_QUALITY_ISSUES);
-      }
-      if (!localStorage.getItem(STORAGE_KEYS.AUDIT)) {
-        safeSetItem(STORAGE_KEYS.AUDIT, INITIAL_AUDIT_LOGS);
-      }
-      if (!localStorage.getItem(STORAGE_KEYS.USERS)) {
-        safeSetItem(STORAGE_KEYS.USERS, INITIAL_USERS);
-      }
-      if (!localStorage.getItem(STORAGE_KEYS.CURRENT_USER)) {
-        // Default logged in as Project Leader (Eva Kaparina, S.Sos)
-        safeSetItem(STORAGE_KEYS.CURRENT_USER, INITIAL_USERS[1]);
-      }
-      if (!localStorage.getItem(STORAGE_KEYS.LAST_UPDATE)) {
-        safeSetItem(STORAGE_KEYS.LAST_UPDATE, new Date().toLocaleString('id-ID') + ' WIB');
-      }
-    } catch {
-      // Ignore storage initialization errors
+    if (MEMORY_CACHE.records === null) {
+      MEMORY_CACHE.records = [...INITIAL_DIPTA_RECORDS];
+    }
+    if (MEMORY_CACHE.mappings === null) {
+      MEMORY_CACHE.mappings = [...INITIAL_STATUS_MAPPINGS];
+    }
+    if (MEMORY_CACHE.batches === null) {
+      MEMORY_CACHE.batches = [...INITIAL_IMPORT_BATCHES];
+    }
+    if (MEMORY_CACHE.issues === null) {
+      MEMORY_CACHE.issues = [...INITIAL_DATA_QUALITY_ISSUES];
+    }
+    if (MEMORY_CACHE.audit === null) {
+      MEMORY_CACHE.audit = [...INITIAL_AUDIT_LOGS];
+    }
+    if (MEMORY_CACHE.users === null) {
+      MEMORY_CACHE.users = [...INITIAL_USERS];
+    }
+    if (!MEMORY_CACHE.lastUpdate) {
+      MEMORY_CACHE.lastUpdate = new Date().toLocaleString('id-ID') + ' WIB';
     }
   }
 
-  // Clear all data (records, batches, quality issues, audit logs) to a clean blank state
+  // Clear all data (records, batches, quality issues, audit logs) directly in memory and Supabase Cloud
   static clearAllDummyData(): { recordsDeleted: number; batchesDeleted: number; issuesDeleted: number; auditDeleted: number } {
     const recordsDeleted = this.getRecords().length;
     const batchesDeleted = this.getImportBatches().length;
@@ -146,24 +137,13 @@ export class DiptaStorageService {
     MEMORY_CACHE.issues = [];
     MEMORY_CACHE.audit = [];
 
-    try {
-      localStorage.removeItem('dipta_records_v1');
-      localStorage.removeItem('dipta_batches_v1');
-      localStorage.removeItem('dipta_issues_v1');
-      localStorage.removeItem('dipta_audit_v1');
-      localStorage.removeItem('dipta_records');
-      localStorage.removeItem('dipta_batches');
-      localStorage.removeItem('dipta_issues');
-      localStorage.removeItem('dipta_audit');
-    } catch {
-      // Ignore
-    }
-
-    safeSetItem(STORAGE_KEYS.RECORDS, []);
-    safeSetItem(STORAGE_KEYS.BATCHES, []);
-    safeSetItem(STORAGE_KEYS.ISSUES, []);
-    safeSetItem(STORAGE_KEYS.AUDIT, []);
+    purgeLegacyLocalStorageData();
     this.touchLastUpdated();
+
+    // Always clear Supabase Cloud directly so every device immediately reflects the empty state
+    if (DiptaSupabaseService.getConfig().isConfigured) {
+      DiptaSupabaseService.clearAllCloudData().catch(() => {});
+    }
 
     return {
       recordsDeleted,
@@ -175,33 +155,42 @@ export class DiptaStorageService {
 
   static resetToDefault(): void {
     this.clearAllDummyData();
-    MEMORY_CACHE.mappings = INITIAL_STATUS_MAPPINGS;
-    MEMORY_CACHE.users = INITIAL_USERS;
-    safeSetItem(STORAGE_KEYS.MAPPINGS, INITIAL_STATUS_MAPPINGS);
-    safeSetItem(STORAGE_KEYS.USERS, INITIAL_USERS);
-    safeSetItem(STORAGE_KEYS.CURRENT_USER, INITIAL_USERS[1]);
-    safeSetItem(STORAGE_KEYS.LAST_UPDATE, new Date().toLocaleString('id-ID') + ' WIB');
+    MEMORY_CACHE.mappings = [...INITIAL_STATUS_MAPPINGS];
+    MEMORY_CACHE.users = [...INITIAL_USERS];
+    MEMORY_CACHE.currentUser = INITIAL_USERS[1];
+    this.touchLastUpdated();
+    if (DiptaSupabaseService.getConfig().isConfigured) {
+      DiptaSupabaseService.uploadMappingsToSupabase(INITIAL_STATUS_MAPPINGS).catch(() => {});
+      DiptaSupabaseService.uploadUsersToSupabase(INITIAL_USERS).catch(() => {});
+    }
   }
 
   // User & RBAC
   static getCurrentUser(): User {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-      const user = raw ? JSON.parse(raw) : INITIAL_USERS[1];
-      if (user && !user.password) {
-        user.password = 'dipta2026';
-      }
-      return user;
-    } catch {
-      return INITIAL_USERS[1];
+    if (MEMORY_CACHE.currentUser) {
+      return MEMORY_CACHE.currentUser;
     }
+    try {
+      const sessionRaw = sessionStorage.getItem('dipta_auth_session') || localStorage.getItem('dipta_auth_session');
+      if (sessionRaw) {
+        const session = JSON.parse(sessionRaw);
+        const found = this.getAllUsers().find(u => u.user_id === session.user_id);
+        if (found) {
+          MEMORY_CACHE.currentUser = found;
+          return found;
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return INITIAL_USERS[1];
   }
 
   static setCurrentUser(user: User): void {
     if (!user.password) {
       user.password = 'dipta2026';
     }
-    safeSetItem(STORAGE_KEYS.CURRENT_USER, user);
+    MEMORY_CACHE.currentUser = user;
   }
 
   static authenticate(identifier: string, password: string): { success: boolean; user?: User; error?: string } {
@@ -236,23 +225,29 @@ export class DiptaStorageService {
       return { success: false, error: 'Password yang Anda masukkan tidak sesuai.' };
     }
 
-    // Update last_login_at
+    // Update last_login_at in Supabase Cloud
     const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
     user.last_login_at = nowStr;
     this.saveUsers(users.map(u => u.user_id === user.user_id ? { ...u, last_login_at: nowStr } : u));
     this.setCurrentUser(user);
-    safeSetItem('dipta_auth_session', {
+    const sessionPayload = JSON.stringify({
       user_id: user.user_id,
       login_at: nowStr,
       expires_at: Date.now() + 86400000 // 24 hours
     });
+    try {
+      sessionStorage.setItem('dipta_auth_session', sessionPayload);
+      localStorage.setItem('dipta_auth_session', sessionPayload);
+    } catch {
+      // Ignore
+    }
 
     return { success: true, user };
   }
 
   static isAuthenticated(): boolean {
     try {
-      const sessionRaw = localStorage.getItem('dipta_auth_session');
+      const sessionRaw = sessionStorage.getItem('dipta_auth_session') || localStorage.getItem('dipta_auth_session');
       if (!sessionRaw) {
         return false;
       }
@@ -264,7 +259,9 @@ export class DiptaStorageService {
   }
 
   static logout(): void {
+    MEMORY_CACHE.currentUser = null;
     try {
+      sessionStorage.removeItem('dipta_auth_session');
       localStorage.removeItem('dipta_auth_session');
     } catch {
       // Ignore
@@ -275,34 +272,8 @@ export class DiptaStorageService {
     if (MEMORY_CACHE.users && MEMORY_CACHE.users.length > 0) {
       return MEMORY_CACHE.users;
     }
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.USERS);
-      if (!raw) {
-        MEMORY_CACHE.users = INITIAL_USERS;
-        safeSetItem(STORAGE_KEYS.USERS, INITIAL_USERS);
-        return INITIAL_USERS;
-      }
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        let changed = false;
-        const mapped = parsed.map((u: User) => {
-          if (!u.password) {
-            changed = true;
-            return { ...u, password: 'dipta2026' };
-          }
-          return u;
-        });
-        MEMORY_CACHE.users = mapped;
-        if (changed) {
-          safeSetItem(STORAGE_KEYS.USERS, mapped);
-        }
-        return mapped;
-      }
-      MEMORY_CACHE.users = INITIAL_USERS;
-      return INITIAL_USERS;
-    } catch {
-      return INITIAL_USERS;
-    }
+    MEMORY_CACHE.users = [...INITIAL_USERS];
+    return MEMORY_CACHE.users;
   }
 
   static saveUsers(users: User[]): void {
@@ -311,7 +282,6 @@ export class DiptaStorageService {
       password: u.password || 'dipta2026'
     }));
     MEMORY_CACHE.users = safeUsers;
-    safeSetItem(STORAGE_KEYS.USERS, safeUsers);
     this.touchLastUpdated();
     if (DiptaSupabaseService.getConfig().isConfigured) {
       DiptaSupabaseService.uploadUsersToSupabase(safeUsers).catch(() => {});
@@ -399,6 +369,9 @@ export class DiptaStorageService {
 
     const updated = users.filter(u => u.user_id !== userId);
     this.saveUsers(updated);
+    if (DiptaSupabaseService.getConfig().isConfigured) {
+      DiptaSupabaseService.deleteUserFromSupabase(userId).catch(() => {});
+    }
 
     this.addAuditLog({
       waktu: new Date().toISOString().replace('T', ' ').substring(0, 19),
@@ -415,11 +388,7 @@ export class DiptaStorageService {
   }
 
   static getLastUpdated(): string {
-    try {
-      return localStorage.getItem(STORAGE_KEYS.LAST_UPDATE) || new Date().toLocaleString('id-ID') + ' WIB';
-    } catch {
-      return new Date().toLocaleString('id-ID') + ' WIB';
-    }
+    return MEMORY_CACHE.lastUpdate || DiptaSupabaseService.getLastSync() || new Date().toLocaleString('id-ID') + ' WIB';
   }
 
   static touchLastUpdated(): void {
@@ -429,7 +398,7 @@ export class DiptaStorageService {
       month: 'long',
       year: 'numeric'
     }) + ' ' + now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) + ' WIB';
-    safeSetItem(STORAGE_KEYS.LAST_UPDATE, formatted);
+    MEMORY_CACHE.lastUpdate = formatted;
   }
 
   // RBAC Permission Checking based on PRD Section 24 & DB
@@ -469,19 +438,13 @@ export class DiptaStorageService {
     }
   }
 
-  // Records
+  // Records (Direct from Supabase Cloud synchronized runtime memory)
   static getRecords(): DiptaRecord[] {
     if (MEMORY_CACHE.records !== null) {
       return MEMORY_CACHE.records;
     }
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.RECORDS);
-      const parsed = raw ? JSON.parse(raw) : INITIAL_DIPTA_RECORDS;
-      MEMORY_CACHE.records = Array.isArray(parsed) ? parsed : INITIAL_DIPTA_RECORDS;
-      return MEMORY_CACHE.records;
-    } catch {
-      return INITIAL_DIPTA_RECORDS;
-    }
+    MEMORY_CACHE.records = [...INITIAL_DIPTA_RECORDS];
+    return MEMORY_CACHE.records;
   }
 
   static getAllRecords(): DiptaRecord[] {
@@ -506,18 +469,22 @@ export class DiptaStorageService {
 
   static saveStatusMappingRules(rules: StatusMappingRule[]): void {
     MEMORY_CACHE.mappings = rules;
-    safeSetItem(STORAGE_KEYS.MAPPINGS, rules);
     this.touchLastUpdated();
     if (DiptaSupabaseService.getConfig().isConfigured) {
       DiptaSupabaseService.uploadMappingsToSupabase(rules).catch(() => {});
     }
   }
 
-  static addBatch(batch: ImportBatch, newRecords: DiptaRecord[]): void {
+  static async addBatch(batch: ImportBatch, newRecords: DiptaRecord[]): Promise<{ success: boolean; error?: string }> {
     this.addImportBatch(batch);
     const existing = this.getRecords();
-    const combined = [...newRecords, ...existing];
-    this.saveRecords(combined, newRecords);
+    // Deduplicate by id_dipta so re-imported records cleanly upsert
+    const newIds = new Set(newRecords.map(r => r.id_dipta));
+    const filteredExisting = existing.filter(r => !newIds.has(r.id_dipta));
+    const combined = [...newRecords, ...filteredExisting];
+    const compacted = compactRecords(combined);
+    MEMORY_CACHE.records = compacted;
+    this.touchLastUpdated();
 
     // Also auto-create issues for records that need verification
     const currentIssues = this.getDataQualityIssues();
@@ -540,10 +507,11 @@ export class DiptaStorageService {
     });
 
     if (newIssues.length > 0) {
-      this.saveIssues([...newIssues, ...currentIssues], newIssues);
+      MEMORY_CACHE.issues = compactRecords([...newIssues, ...currentIssues]);
     }
 
-    this.addAuditLog({
+    const auditEntry: AuditLog = {
+      log_id: `AUD-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`,
       waktu: new Date().toISOString().replace('T', ' ').substring(0, 19),
       actor: batch.imported_by_name,
       actor_user_id: batch.imported_by_user_id,
@@ -553,13 +521,28 @@ export class DiptaStorageService {
       sumber_aplikasi: batch.source_app,
       nilai_baru: `${batch.row_valid} valid, ${batch.row_invalid} invalid dari ${batch.row_total} baris`,
       alasan: `Import berkas ${batch.file_name} (${batch.dataset_code})`
-    });
+    };
+    MEMORY_CACHE.audit = [auditEntry, ...this.getAuditLogs()];
+
+    // Directly persist to Supabase Cloud Database so all devices immediately see the imported data
+    if (DiptaSupabaseService.getConfig().isConfigured) {
+      const [recRes] = await Promise.all([
+        DiptaSupabaseService.uploadRecordsToSupabase(compactRecords(newRecords)),
+        DiptaSupabaseService.uploadBatchesToSupabase([batch]),
+        newIssues.length > 0 ? DiptaSupabaseService.uploadIssuesToSupabase(compactRecords(newIssues)) : Promise.resolve({ success: true, count: 0 }),
+        DiptaSupabaseService.uploadAuditLogsToSupabase([auditEntry])
+      ]);
+      if (!recRes.success) {
+        return { success: false, error: recRes.error };
+      }
+    }
+
+    return { success: true };
   }
 
   static saveRecords(records: DiptaRecord[], deltaRecords?: DiptaRecord[]): void {
     const compacted = compactRecords(records);
     MEMORY_CACHE.records = compacted;
-    safeSetItem(STORAGE_KEYS.RECORDS, compacted);
     this.touchLastUpdated();
     if (DiptaSupabaseService.getConfig().isConfigured) {
       const toUpload = deltaRecords && deltaRecords.length > 0 ? deltaRecords : compacted;
@@ -609,14 +592,8 @@ export class DiptaStorageService {
     if (MEMORY_CACHE.mappings !== null) {
       return MEMORY_CACHE.mappings;
     }
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.MAPPINGS);
-      const parsed = raw ? JSON.parse(raw) : INITIAL_STATUS_MAPPINGS;
-      MEMORY_CACHE.mappings = Array.isArray(parsed) ? parsed : INITIAL_STATUS_MAPPINGS;
-      return MEMORY_CACHE.mappings;
-    } catch {
-      return INITIAL_STATUS_MAPPINGS;
-    }
+    MEMORY_CACHE.mappings = [...INITIAL_STATUS_MAPPINGS];
+    return MEMORY_CACHE.mappings;
   }
 
   static saveStatusMapping(rule: StatusMappingRule, user: User): void {
@@ -642,7 +619,6 @@ export class DiptaStorageService {
     }
 
     MEMORY_CACHE.mappings = mappings;
-    safeSetItem(STORAGE_KEYS.MAPPINGS, mappings);
     if (DiptaSupabaseService.getConfig().isConfigured) {
       DiptaSupabaseService.uploadMappingsToSupabase(mappings).catch(() => {});
     }
@@ -668,13 +644,15 @@ export class DiptaStorageService {
   static deleteStatusMapping(mapping_id: string): void {
     const mappings = this.getStatusMappings().filter(m => m.mapping_id !== mapping_id);
     MEMORY_CACHE.mappings = mappings;
-    safeSetItem(STORAGE_KEYS.MAPPINGS, mappings);
+    if (DiptaSupabaseService.getConfig().isConfigured) {
+      DiptaSupabaseService.deleteMappingFromSupabase(mapping_id).catch(() => {});
+    }
   }
 
   // Automatically update records when status mapping changes
   private static reclassifyRecords(sourceApp: SourceApp, sourceStatus: string, newTarget: StatusDIPTA): void {
     const records = [...this.getRecords()];
-    let updated = false;
+    const changedRecords: DiptaRecord[] = [];
     records.forEach(r => {
       if (r.sumber_aplikasi === sourceApp && r.status_asli === sourceStatus) {
         r.status_dipta = newTarget;
@@ -682,11 +660,11 @@ export class DiptaStorageService {
           r.status_validasi = 'VALID';
           r.catatan_validasi = undefined;
         }
-        updated = true;
+        changedRecords.push(r);
       }
     });
-    if (updated) {
-      this.saveRecords(records);
+    if (changedRecords.length > 0) {
+      this.saveRecords(records, changedRecords);
     }
   }
 
@@ -695,20 +673,13 @@ export class DiptaStorageService {
     if (MEMORY_CACHE.issues !== null) {
       return MEMORY_CACHE.issues;
     }
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.ISSUES);
-      const parsed = raw ? JSON.parse(raw) : INITIAL_DATA_QUALITY_ISSUES;
-      MEMORY_CACHE.issues = Array.isArray(parsed) ? parsed : INITIAL_DATA_QUALITY_ISSUES;
-      return MEMORY_CACHE.issues;
-    } catch {
-      return INITIAL_DATA_QUALITY_ISSUES;
-    }
+    MEMORY_CACHE.issues = [...INITIAL_DATA_QUALITY_ISSUES];
+    return MEMORY_CACHE.issues;
   }
 
   static saveIssues(issues: DataQualityIssue[], deltaIssues?: DataQualityIssue[]): void {
     const compacted = compactRecords(issues);
     MEMORY_CACHE.issues = compacted;
-    safeSetItem(STORAGE_KEYS.ISSUES, compacted);
     if (DiptaSupabaseService.getConfig().isConfigured) {
       const toUpload = deltaIssues && deltaIssues.length > 0 ? deltaIssues : compacted;
       DiptaSupabaseService.uploadIssuesToSupabase(toUpload).catch(() => {});
@@ -888,20 +859,13 @@ export class DiptaStorageService {
     if (MEMORY_CACHE.batches !== null) {
       return MEMORY_CACHE.batches;
     }
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.BATCHES);
-      const parsed = raw ? JSON.parse(raw) : INITIAL_IMPORT_BATCHES;
-      MEMORY_CACHE.batches = Array.isArray(parsed) ? parsed : INITIAL_IMPORT_BATCHES;
-      return MEMORY_CACHE.batches;
-    } catch {
-      return INITIAL_IMPORT_BATCHES;
-    }
+    MEMORY_CACHE.batches = [...INITIAL_IMPORT_BATCHES];
+    return MEMORY_CACHE.batches;
   }
 
   static addImportBatch(batch: ImportBatch): void {
     const batches = [batch, ...this.getImportBatches()];
     MEMORY_CACHE.batches = batches;
-    safeSetItem(STORAGE_KEYS.BATCHES, batches);
     if (DiptaSupabaseService.getConfig().isConfigured) {
       DiptaSupabaseService.uploadBatchesToSupabase([batch]).catch(() => {});
     }
@@ -912,14 +876,8 @@ export class DiptaStorageService {
     if (MEMORY_CACHE.audit !== null) {
       return MEMORY_CACHE.audit;
     }
-    try {
-      const raw = localStorage.getItem(STORAGE_KEYS.AUDIT);
-      const parsed = raw ? JSON.parse(raw) : INITIAL_AUDIT_LOGS;
-      MEMORY_CACHE.audit = Array.isArray(parsed) ? parsed : INITIAL_AUDIT_LOGS;
-      return MEMORY_CACHE.audit;
-    } catch {
-      return INITIAL_AUDIT_LOGS;
-    }
+    MEMORY_CACHE.audit = [...INITIAL_AUDIT_LOGS];
+    return MEMORY_CACHE.audit;
   }
 
   static addAuditLog(log: Omit<AuditLog, 'log_id'>): void {
@@ -929,7 +887,6 @@ export class DiptaStorageService {
     };
     const logs = [newLog, ...this.getAuditLogs()];
     MEMORY_CACHE.audit = logs;
-    safeSetItem(STORAGE_KEYS.AUDIT, logs);
     if (DiptaSupabaseService.getConfig().isConfigured) {
       DiptaSupabaseService.uploadAuditLogsToSupabase([newLog]).catch(() => {});
     }
@@ -1637,6 +1594,8 @@ export class DiptaStorageService {
   }
 
   static async loadAllFromSupabase(): Promise<{ success: boolean; recordsCount: number; error?: string }> {
+    purgeLegacyLocalStorageData();
+
     const [recordsRes, batchesRes, issuesRes, logsRes, mappingsRes, usersRes] = await Promise.all([
       DiptaSupabaseService.fetchRecordsFromSupabase(),
       DiptaSupabaseService.fetchBatchesFromSupabase(),
@@ -1650,31 +1609,40 @@ export class DiptaStorageService {
       return { success: false, recordsCount: 0, error: recordsRes.error };
     }
 
-    if (recordsRes.data && recordsRes.data.length > 0) {
-      const compacted = compactRecords(recordsRes.data);
-      MEMORY_CACHE.records = compacted;
-      safeSetItem(STORAGE_KEYS.RECORDS, compacted);
+    // Authoritative overwrite from Supabase Cloud (even if 0 rows!) so all devices show identical data
+    MEMORY_CACHE.records = compactRecords(recordsRes.data || []);
+
+    if (batchesRes.success) {
+      MEMORY_CACHE.batches = batchesRes.data || [];
     }
-    if (batchesRes.success && batchesRes.data && batchesRes.data.length > 0) {
-      MEMORY_CACHE.batches = batchesRes.data;
-      safeSetItem(STORAGE_KEYS.BATCHES, batchesRes.data);
+    if (issuesRes.success) {
+      MEMORY_CACHE.issues = compactRecords(issuesRes.data || []);
     }
-    if (issuesRes.success && issuesRes.data && issuesRes.data.length > 0) {
-      const compactedIssues = compactRecords(issuesRes.data);
-      MEMORY_CACHE.issues = compactedIssues;
-      safeSetItem(STORAGE_KEYS.ISSUES, compactedIssues);
+    if (logsRes.success) {
+      MEMORY_CACHE.audit = logsRes.data || [];
     }
-    if (logsRes.success && logsRes.data && logsRes.data.length > 0) {
-      MEMORY_CACHE.audit = logsRes.data;
-      safeSetItem(STORAGE_KEYS.AUDIT, logsRes.data);
+
+    // Master Status Mappings: use cloud data if present, otherwise seed initial rules to cloud
+    if (mappingsRes.success) {
+      if (mappingsRes.data && mappingsRes.data.length > 0) {
+        MEMORY_CACHE.mappings = mappingsRes.data;
+      } else {
+        MEMORY_CACHE.mappings = [...INITIAL_STATUS_MAPPINGS];
+        DiptaSupabaseService.uploadMappingsToSupabase(INITIAL_STATUS_MAPPINGS).catch(() => {});
+      }
     }
-    if (mappingsRes.success && mappingsRes.data && mappingsRes.data.length > 0) {
-      MEMORY_CACHE.mappings = mappingsRes.data;
-      safeSetItem(STORAGE_KEYS.MAPPINGS, mappingsRes.data);
-    }
-    if (usersRes.success && usersRes.data && usersRes.data.length > 0) {
-      MEMORY_CACHE.users = usersRes.data;
-      safeSetItem(STORAGE_KEYS.USERS, usersRes.data);
+
+    // Master Users: use cloud data if present, otherwise seed initial users to cloud
+    if (usersRes.success) {
+      if (usersRes.data && usersRes.data.length > 0) {
+        MEMORY_CACHE.users = usersRes.data.map(u => ({
+          ...u,
+          password: u.password || 'dipta2026'
+        }));
+      } else {
+        MEMORY_CACHE.users = [...INITIAL_USERS];
+        DiptaSupabaseService.uploadUsersToSupabase(INITIAL_USERS).catch(() => {});
+      }
     }
 
     this.touchLastUpdated();

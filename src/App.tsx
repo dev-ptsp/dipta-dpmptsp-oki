@@ -74,23 +74,23 @@ export default function App() {
     search_query: ''
   });
 
+  const [isInitialCloudLoading, setIsInitialCloudLoading] = useState<boolean>(true);
+
   // Reload all records & issues from storage
   const reloadData = () => {
-    setRecords(DiptaStorageService.getAllRecords());
-    setIssues(DiptaStorageService.getAllIssues());
-    setBatches(DiptaStorageService.getAllBatches());
-    setAuditLogs(DiptaStorageService.getAuditLogs());
+    setRecords([...DiptaStorageService.getAllRecords()]);
+    setIssues([...DiptaStorageService.getAllIssues()]);
+    setBatches([...DiptaStorageService.getAllBatches()]);
+    setAuditLogs([...DiptaStorageService.getAuditLogs()]);
     setCurrentUser(DiptaStorageService.getCurrentUser());
   };
 
   useEffect(() => {
-    reloadData();
-
-    // Auto-push updated package.json & vercel.json fix to GitHub if user already connected their token
+    // Auto-push updated Supabase Cloud direct-sync & Vite build fix to GitHub if user already connected their token
     const savedGhToken = localStorage.getItem('dipta_github_token');
     const savedGhRepo = localStorage.getItem('dipta_github_repo') || 'dipta-dpmptsp-oki';
     const lastSyncedFix = localStorage.getItem('dipta_github_sync_version');
-    if (savedGhToken && lastSyncedFix !== 'v3-vercel-npm-fix') {
+    if (savedGhToken && lastSyncedFix !== 'v4-supabase-direct-sync') {
       fetch('/api/github/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -98,38 +98,70 @@ export default function App() {
           githubToken: savedGhToken,
           repoName: savedGhRepo,
           isPrivate: false,
-          commitMessage: 'Fix Vercel npm install & build configuration (remove bun.lock, update esbuild & .npmrc)'
+          commitMessage: 'Direct Supabase Cloud database synchronization across all devices & fix react-is Vite build'
         })
       })
         .then(r => r.json())
         .then(res => {
           if (res?.success) {
-            localStorage.setItem('dipta_github_sync_version', 'v3-vercel-npm-fix');
+            localStorage.setItem('dipta_github_sync_version', 'v4-supabase-direct-sync');
           }
         })
         .catch(() => {});
     }
 
-    // If Supabase is configured, pull latest data & subscribe to real-time updates
-    if (DiptaSupabaseService.getConfig().isConfigured) {
+    const syncFromSupabaseCloud = async () => {
+      if (DiptaSupabaseService.getConfig().isConfigured) {
+        const res = await DiptaStorageService.loadAllFromSupabase();
+        if (res.success) {
+          reloadData();
+        }
+      }
+      setIsInitialCloudLoading(false);
+    };
+
+    syncFromSupabaseCloud();
+
+    // Subscribe to real-time Postgres changes across all 6 Supabase tables
+    const unsubscribe = DiptaSupabaseService.subscribeToRealtime(() => {
       DiptaStorageService.loadAllFromSupabase().then(res => {
         if (res.success) {
           reloadData();
         }
       });
+    });
 
-      const unsubscribe = DiptaSupabaseService.subscribeToRealtime(() => {
+    // Also re-fetch when user switches tabs/devices or focuses window so all devices stay 100% identical
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
         DiptaStorageService.loadAllFromSupabase().then(res => {
           if (res.success) {
             reloadData();
           }
         });
-      });
+      }
+    };
 
-      return () => {
-        unsubscribe();
-      };
-    }
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    // Periodic cloud heartbeat sync every 15 seconds as fallback if WebSocket is blocked by corporate firewall
+    const pollInterval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        DiptaStorageService.loadAllFromSupabase().then(res => {
+          if (res.success) {
+            reloadData();
+          }
+        });
+      }
+    }, 15000);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.clearInterval(pollInterval);
+    };
   }, []);
 
   // Filter computation

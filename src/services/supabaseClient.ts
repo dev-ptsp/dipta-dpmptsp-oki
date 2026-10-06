@@ -205,6 +205,11 @@ export class DiptaSupabaseService {
         { event: '*', schema: 'public', table: 'dipta_status_mappings' },
         (payload) => onRemoteChange('dipta_status_mappings', payload)
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'dipta_users' },
+        (payload) => onRemoteChange('dipta_users', payload)
+      )
       .subscribe((status) => {
         this.isRealtimeConnected = status === 'SUBSCRIBED';
         window.dispatchEvent(
@@ -370,7 +375,7 @@ export class DiptaSupabaseService {
   }
 
   /**
-   * Fetch all records from Supabase dipta_records table
+   * Fetch all records from Supabase dipta_records table (supports 10,000+ rows via automatic pagination)
    */
   static async fetchRecordsFromSupabase(): Promise<{ success: boolean; data: DiptaRecord[]; error?: string }> {
     const client = this.getClient();
@@ -379,17 +384,32 @@ export class DiptaSupabaseService {
     }
 
     try {
-      const { data, error } = await client
-        .from('dipta_records')
-        .select('*')
-        .order('tanggal_update_dipta', { ascending: false });
+      const pageSize = 1000;
+      let allRecords: DiptaRecord[] = [];
+      let from = 0;
 
-      if (error) {
-        throw new Error(error.message);
+      while (true) {
+        const { data, error } = await client
+          .from('dipta_records')
+          .select('*')
+          .order('tanggal_update_dipta', { ascending: false })
+          .range(from, from + pageSize - 1);
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        const chunk = (data as DiptaRecord[]) || [];
+        allRecords = allRecords.concat(chunk);
+
+        if (chunk.length < pageSize) {
+          break;
+        }
+        from += pageSize;
       }
 
       this.touchSyncTimestamp();
-      return { success: true, data: (data as DiptaRecord[]) || [] };
+      return { success: true, data: allRecords };
     } catch (err: any) {
       return { success: false, data: [], error: err?.message || 'Gagal mengambil data dari Supabase' };
     }
@@ -600,6 +620,38 @@ export class DiptaSupabaseService {
       return { success: true, data: (data as User[]) || [] };
     } catch (err: any) {
       return { success: false, data: [], error: err?.message };
+    }
+  }
+
+  /**
+   * Delete a status mapping rule directly from Supabase
+   */
+  static async deleteMappingFromSupabase(mappingId: string): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Client not configured' };
+    try {
+      const { error } = await client.from('dipta_status_mappings').delete().eq('mapping_id', mappingId);
+      if (error) throw new Error(error.message);
+      this.touchSyncTimestamp('(Real-Time)');
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
+    }
+  }
+
+  /**
+   * Delete a user directly from Supabase
+   */
+  static async deleteUserFromSupabase(userId: number): Promise<{ success: boolean; error?: string }> {
+    const client = this.getClient();
+    if (!client) return { success: false, error: 'Client not configured' };
+    try {
+      const { error } = await client.from('dipta_users').delete().eq('user_id', userId);
+      if (error) throw new Error(error.message);
+      this.touchSyncTimestamp('(Real-Time)');
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message };
     }
   }
 

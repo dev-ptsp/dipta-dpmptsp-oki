@@ -371,7 +371,7 @@ export const AdministrationView: React.FC<AdministrationViewProps> = ({ currentU
   const [syncFeedback, setSyncFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [copiedSql, setCopiedSql] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState(DiptaSupabaseService.getLastSync());
-  const [includeCloud, setIncludeCloud] = useState(false);
+  const [includeCloud, setIncludeCloud] = useState(true);
   const [isClearing, setIsClearing] = useState(false);
 
   // Pagination for Users (Tab 1)
